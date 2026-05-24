@@ -33,6 +33,18 @@ The simulation compares:
 
 It prints fee totals, max shield fee, and final pressure for deterministic one-direction, alternating-flow, and quiet-reset scenarios.
 
+### Deployment Dry Run
+
+With local Anvil running:
+
+```bash
+forge script script/00_DeployHook.s.sol:DeployHookScript \
+  --rpc-url http://127.0.0.1:8545 \
+  --private-key <ANVIL_PRIVATE_KEY>
+```
+
+The deploy script mines a hook address for the MVP permission bits and deploys `DirectionalToxicityShield` with the configured v4 `PoolManager`.
+
 ### Requirements
 
 This template is designed to work with Foundry (stable). If you are using Foundry Nightly, you may encounter compatibility issues. You can update your Foundry installation to the latest stable version by running:
