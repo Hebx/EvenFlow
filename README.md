@@ -1,28 +1,37 @@
-# Uniswap v4 Hook Template
+# Directional Toxicity Shield
 
-**A template for writing Uniswap v4 Hooks 🦄**
+Directional Toxicity Shield is a prior-art-aware Uniswap v4 hook that applies a bounded directional dynamic LP fee. It tracks signed, decaying directional pressure per `PoolId`, raises fees when a swap continues harmful pressure, discounts counter-flow, and falls back to conservative behavior under low liquidity or quiet periods.
 
-### Get Started
+This MVP is intentionally pure v4:
 
-This template provides a starting point for writing Uniswap v4 Hooks, including a simple example and preconfigured test environment. Start by creating a new repository using the "Use this template" button at the top right of this page. Alternatively you can also click this link:
+- no custody
+- no external oracle dependency
+- no return deltas
+- minimal hook permissions: `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap`
 
-[![Use this Template](https://img.shields.io/badge/Use%20this%20Template-101010?style=for-the-badge&logo=github)](https://github.com/uniswapfoundation/v4-template/generate)
+The implementation is scaffolded from the Uniswap Foundation v4 template and keeps the original helper scripts/tests available while the production hook lives in [src/DirectionalToxicityShield.sol](src/DirectionalToxicityShield.sol).
 
-1. The example hook [Counter.sol](src/Counter.sol) demonstrates the `beforeSwap()` and `afterSwap()` hooks
-2. The test template [Counter.t.sol](test/Counter.t.sol) preconfigures the v4 pool manager, test tokens, and test liquidity.
-
-<details>
-<summary>Updating to v4-template:latest</summary>
-
-This template is actively maintained -- you can update the v4 dependencies, scripts, and helpers:
+### Verify
 
 ```bash
-git remote add template https://github.com/uniswapfoundation/v4-template
-git fetch template
-git merge template/main <BRANCH> --allow-unrelated-histories
+forge fmt --check
+forge build
+forge test
 ```
 
-</details>
+### Simulation
+
+```bash
+forge script script/DirectionalToxicityShieldSimulation.s.sol:DirectionalToxicityShieldSimulation
+```
+
+The simulation compares:
+
+- static fee baseline
+- plain last-move directional baseline
+- Directional Toxicity Shield decaying pressure policy
+
+It prints fee totals, max shield fee, and final pressure for deterministic one-direction, alternating-flow, and quiet-reset scenarios.
 
 ### Requirements
 
