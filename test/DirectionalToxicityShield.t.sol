@@ -6,16 +6,21 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {Constants} from "@uniswap/v4-core/test/utils/Constants.sol";
+import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {IPositionManager} from "@uniswap/v4-periphery/src/interfaces/IPositionManager.sol";
 
+import {EasyPosm} from "./utils/libraries/EasyPosm.sol";
 import {DirectionalToxicityShieldHarness} from "./harness/DirectionalToxicityShieldHarness.sol";
 import {DirectionalToxicityShield} from "../src/DirectionalToxicityShield.sol";
 import {BaseTest} from "./utils/BaseTest.sol";
 
 contract DirectionalToxicityShieldTest is BaseTest {
+    using EasyPosm for IPositionManager;
     using PoolIdLibrary for PoolKey;
 
     Currency currency0;
@@ -211,6 +216,21 @@ contract DirectionalToxicityShieldTest is BaseTest {
         assertEq(state.lastUpdateTime, block.timestamp);
     }
 
+    function test_updatePressure_decaysAfterFilterWindow() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+        hook.setPressure(poolId, 100);
+
+        vm.warp(block.timestamp + 30);
+        hook.updatePressureForTest(poolId, 0);
+
+        DirectionalToxicityShield.DirectionalState memory state = hook.getDirectionalState(poolId);
+        assertEq(state.pressure, 50);
+        assertEq(state.referenceTick, 0);
+        assertEq(state.lastUpdateTime, block.timestamp);
+    }
+
     function test_previewFee_returnsBaseFeeBelowLiquidityFloor() public {
         PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
         PoolId poolId = dynamicFeeKey.toId();
@@ -260,6 +280,69 @@ contract DirectionalToxicityShieldTest is BaseTest {
         assertEq(hook.previewFee(secondKey, zeroForOne), 3500);
     }
 
+    function test_swap_recordsAppliedOverrideFee() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        hook.setPressure(poolId, 100);
+
+        swapRouter.swapExactTokensForTokens({
+            amountIn: 1e18,
+            amountOutMin: 0,
+            zeroForOne: false,
+            poolKey: dynamicFeeKey,
+            hookData: Constants.ZERO_BYTES,
+            receiver: address(this),
+            deadline: block.timestamp + 1
+        });
+
+        DirectionalToxicityShield.DirectionalState memory state = hook.getDirectionalState(poolId);
+        assertEq(state.lastFee, 3500);
+    }
+
+    function test_swapExactOut_recordsAppliedOverrideFee() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        hook.setPressure(poolId, 100);
+
+        swapRouter.swapTokensForExactTokens({
+            amountOut: 1e17,
+            amountInMax: 2e18,
+            zeroForOne: false,
+            poolKey: dynamicFeeKey,
+            hookData: Constants.ZERO_BYTES,
+            receiver: address(this),
+            deadline: block.timestamp + 1
+        });
+
+        DirectionalToxicityShield.DirectionalState memory state = hook.getDirectionalState(poolId);
+        assertEq(state.lastFee, 3500);
+    }
+
+    function test_swap_updatesPressureFromExecutedTick() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+
+        swapRouter.swapExactTokensForTokens({
+            amountIn: 1e18,
+            amountOutMin: 0,
+            zeroForOne: false,
+            poolKey: dynamicFeeKey,
+            hookData: Constants.ZERO_BYTES,
+            receiver: address(this),
+            deadline: block.timestamp + 1
+        });
+
+        DirectionalToxicityShield.DirectionalState memory state = hook.getDirectionalState(poolId);
+        assertGt(state.lastTick, 0);
+        assertGt(state.pressure, 0);
+    }
+
     function testFuzz_previewFeeWithinBounds(int56 pressure, bool zeroForOne) public {
         pressure = int56(bound(pressure, -10_000, 10_000));
 
@@ -277,7 +360,50 @@ contract DirectionalToxicityShieldTest is BaseTest {
         assertLe(fee, 10000);
     }
 
+    function testFuzz_updatePressureWithinBounds(int56 pressure, int24 currentTick) public {
+        pressure = int56(bound(pressure, -10_000, 10_000));
+        currentTick = int24(bound(currentTick, -10_000, 10_000));
+
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+        hook.setPressure(poolId, pressure);
+
+        hook.updatePressureForTest(poolId, currentTick);
+
+        DirectionalToxicityShield.DirectionalState memory state = hook.getDirectionalState(poolId);
+        assertGe(state.pressure, -500);
+        assertLe(state.pressure, 500);
+    }
+
     function _disableLiquidityFloor(PoolId poolId) private {
         hook.setFeePolicy(poolId, 3000, 500, 10000, 500, 10, 500, 500_000, 30, 5 minutes, 0, 5);
+    }
+
+    function _initializePoolWithFullRangeLiquidity(PoolKey memory poolKey) private {
+        poolManager.initialize(poolKey, Constants.SQRT_PRICE_1_1);
+
+        int24 tickLower = TickMath.minUsableTick(poolKey.tickSpacing);
+        int24 tickUpper = TickMath.maxUsableTick(poolKey.tickSpacing);
+        uint128 liquidityAmount = 100e18;
+
+        (uint256 amount0Expected, uint256 amount1Expected) = LiquidityAmounts.getAmountsForLiquidity(
+            Constants.SQRT_PRICE_1_1,
+            TickMath.getSqrtPriceAtTick(tickLower),
+            TickMath.getSqrtPriceAtTick(tickUpper),
+            liquidityAmount
+        );
+
+        positionManager.mint(
+            poolKey,
+            tickLower,
+            tickUpper,
+            liquidityAmount,
+            amount0Expected + 1,
+            amount1Expected + 1,
+            address(this),
+            block.timestamp,
+            Constants.ZERO_BYTES
+        );
     }
 }

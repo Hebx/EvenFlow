@@ -102,7 +102,8 @@ contract DirectionalToxicityShield is BaseHook {
     {
         PoolId poolId = key.toId();
         uint24 fee = _previewFee(poolId, params.zeroForOne);
-        DirectionalState memory state = directionalStates[poolId];
+        DirectionalState storage state = directionalStates[poolId];
+        state.lastFee = fee;
 
         emit FeeOverrideApplied(poolId, params.zeroForOne, fee, state.pressure, state.regime);
 
