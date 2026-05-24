@@ -29,9 +29,10 @@ The simulation compares:
 
 - static fee baseline
 - plain last-move directional baseline
+- deployed fixed-direction comparator: Clanker Static Fee Hook on Base (`0xDd5EeaFf7BD481AD55Db083062b13a3cdf0A68CC`), modeled from its verified source and an observed `PoolInitialized` fee pair of `10000/5000`
 - Directional Toxicity Shield decaying pressure policy
 
-It prints fee totals, max shield fee, and final pressure for deterministic one-direction, alternating-flow, and quiet-reset scenarios.
+It prints fee totals, max fee, and final pressure for deterministic one-direction, alternating-flow, and quiet-reset scenarios. The deployed comparator is a fixed per-direction fee hook, not a signed pressure accumulator, so treat it as a live directional-fee reference point rather than a like-for-like product benchmark.
 
 ### Deployment Dry Run
 

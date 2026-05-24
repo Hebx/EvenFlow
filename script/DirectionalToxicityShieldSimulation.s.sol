@@ -5,6 +5,9 @@ import {Script, console2} from "forge-std/Script.sol";
 
 contract DirectionalToxicityShieldSimulation is Script {
     uint256 private constant FEE_DENOMINATOR = 1_000_000;
+    address private constant DEPLOYED_CLANKER_STATIC_FEE_HOOK = 0xDd5EeaFf7BD481AD55Db083062b13a3cdf0A68CC;
+    uint24 private constant OBSERVED_CLANKER_FEE = 10_000;
+    uint24 private constant OBSERVED_PAIRED_FEE = 5_000;
 
     struct FeePolicy {
         uint24 baseFee;
@@ -35,7 +38,9 @@ contract DirectionalToxicityShieldSimulation is Script {
     struct ScenarioResult {
         uint256 staticFees;
         uint256 plainDirectionalFees;
+        uint256 deployedFixedDirectionalFees;
         uint256 shieldFees;
+        uint24 maxDeployedFixedDirectionalFee;
         uint24 maxShieldFee;
         int56 finalPressure;
     }
@@ -64,10 +69,15 @@ contract DirectionalToxicityShieldSimulation is Script {
 
             uint24 shieldFee = _shieldFee(shieldState, policy, step.zeroForOne, nowTime);
             uint24 plainFee = _plainDirectionalFee(previousTickMove, policy, step.zeroForOne);
+            uint24 deployedFixedDirectionalFee = _deployedFixedDirectionalFee(step.zeroForOne);
 
             result.staticFees += _feeAmount(step.notional, policy.baseFee);
             result.plainDirectionalFees += _feeAmount(step.notional, plainFee);
+            result.deployedFixedDirectionalFees += _feeAmount(step.notional, deployedFixedDirectionalFee);
             result.shieldFees += _feeAmount(step.notional, shieldFee);
+            if (deployedFixedDirectionalFee > result.maxDeployedFixedDirectionalFee) {
+                result.maxDeployedFixedDirectionalFee = deployedFixedDirectionalFee;
+            }
             if (shieldFee > result.maxShieldFee) result.maxShieldFee = shieldFee;
 
             currentTick += step.tickMove;
@@ -91,6 +101,14 @@ contract DirectionalToxicityShieldSimulation is Script {
         if (aligned) return _clampFee(policy.baseFee + adjustment, policy);
 
         return _clampFee(policy.baseFee > adjustment ? policy.baseFee - adjustment : 0, policy);
+    }
+
+    function _deployedFixedDirectionalFee(bool zeroForOne) private pure returns (uint24) {
+        // Models deployed Base hook 0xDd5E...68CC for an observed PoolInitialized pair:
+        // clankerFee=10000, pairedFee=5000. Orientation is set so zeroForOne=false hits
+        // the higher directional side in the toxic-flow scenario.
+        bool clankerIsToken0 = false;
+        return zeroForOne != clankerIsToken0 ? OBSERVED_PAIRED_FEE : OBSERVED_CLANKER_FEE;
     }
 
     function _plainDirectionalFee(int24 previousTickMove, FeePolicy memory policy, bool zeroForOne)
@@ -164,9 +182,12 @@ contract DirectionalToxicityShieldSimulation is Script {
     function _logScenario(string memory name, ScenarioResult memory result) private pure {
         console2.log("");
         console2.log(name);
+        console2.log("  deployed comparator:    ", DEPLOYED_CLANKER_STATIC_FEE_HOOK);
         console2.log("  static fees:            ", result.staticFees);
         console2.log("  plain directional fees: ", result.plainDirectionalFees);
+        console2.log("  deployed fixed-dir fees:", result.deployedFixedDirectionalFees);
         console2.log("  shield fees:            ", result.shieldFees);
+        console2.log("  max deployed fixed fee: ", result.maxDeployedFixedDirectionalFee);
         console2.log("  max shield fee:         ", result.maxShieldFee);
         console2.log("  final shield pressure:  ", int256(result.finalPressure));
     }
