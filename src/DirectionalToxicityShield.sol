@@ -101,11 +101,17 @@ contract DirectionalToxicityShield is BaseHook {
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         PoolId poolId = key.toId();
-        uint24 fee = _previewFee(poolId, params.zeroForOne);
+        (uint24 fee, int56 effectivePressure) = _previewFeeAndPressure(poolId, params.zeroForOne);
         DirectionalState storage state = directionalStates[poolId];
         state.lastFee = fee;
 
-        emit FeeOverrideApplied(poolId, params.zeroForOne, fee, state.pressure, state.regime);
+        emit FeeOverrideApplied(
+            poolId,
+            params.zeroForOne,
+            fee,
+            effectivePressure,
+            _regimeFor(effectivePressure, feePolicies[poolId].maxPressure)
+        );
 
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, fee | LPFeeLibrary.OVERRIDE_FEE_FLAG);
     }
@@ -139,25 +145,35 @@ contract DirectionalToxicityShield is BaseHook {
     }
 
     function _previewFee(PoolId poolId, bool zeroForOne) private view returns (uint24) {
+        (uint24 fee,) = _previewFeeAndPressure(poolId, zeroForOne);
+        return fee;
+    }
+
+    function _previewFeeAndPressure(PoolId poolId, bool zeroForOne)
+        private
+        view
+        returns (uint24 fee, int56 effectivePressure)
+    {
         FeePolicy memory policy = feePolicies[poolId];
         DirectionalState memory state = directionalStates[poolId];
 
         if (policy.liquidityFloor > 0 && poolManager.getLiquidity(poolId) < policy.liquidityFloor) {
-            return _clampFee(policy.baseFee, policy);
+            return (_clampFee(policy.baseFee, policy), 0);
         }
 
-        if (state.pressure == 0) return _clampFee(policy.baseFee, policy);
+        effectivePressure = _effectivePressure(state, policy);
+        if (effectivePressure == 0) return (_clampFee(policy.baseFee, policy), 0);
 
-        uint24 adjustment = _feeAdjustment(state.pressure, policy);
-        bool aligned = state.pressure > 0 ? !zeroForOne : zeroForOne;
+        uint24 adjustment = _feeAdjustment(effectivePressure, policy);
+        bool aligned = effectivePressure > 0 ? !zeroForOne : zeroForOne;
 
         if (aligned) {
             uint256 increased = uint256(policy.baseFee) + adjustment;
-            return _clampFee(increased > type(uint24).max ? type(uint24).max : uint24(increased), policy);
+            fee = _clampFee(increased > type(uint24).max ? type(uint24).max : uint24(increased), policy);
+        } else {
+            uint24 decreased = policy.baseFee > adjustment ? policy.baseFee - adjustment : 0;
+            fee = _clampFee(decreased, policy);
         }
-
-        uint24 decreased = policy.baseFee > adjustment ? policy.baseFee - adjustment : 0;
-        return _clampFee(decreased, policy);
     }
 
     function _feeAdjustment(int56 pressure, FeePolicy memory policy) private pure returns (uint24) {
@@ -170,6 +186,14 @@ contract DirectionalToxicityShield is BaseHook {
         if (fee < policy.minFee) return policy.minFee;
         if (fee > policy.maxFee) return policy.maxFee;
         return fee;
+    }
+
+    function _effectivePressure(DirectionalState memory state, FeePolicy memory policy) private view returns (int56) {
+        uint40 elapsed = uint40(block.timestamp) - state.lastUpdateTime;
+        if (elapsed >= policy.decayWindow) return 0;
+        if (elapsed < policy.filterWindow) return state.pressure;
+
+        return int56((int256(state.pressure) * int256(uint256(policy.decayFactor))) / int256(uint256(1_000_000)));
     }
 
     function _updatePressure(PoolId poolId, int24 currentTick) internal {
