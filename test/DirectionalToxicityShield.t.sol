@@ -23,6 +23,11 @@ contract DirectionalToxicityShieldTest is BaseTest {
     using EasyPosm for IPositionManager;
     using PoolIdLibrary for PoolKey;
 
+    event PoolPolicyInitialized(PoolId indexed poolId, uint24 baseFee, uint24 minFee, uint24 maxFee);
+    event FeeOverrideApplied(PoolId indexed poolId, bool zeroForOne, uint24 fee, int56 pressure, uint8 regime);
+    event DirectionalPressureUpdated(PoolId indexed poolId, int24 tickMove, int56 pressure, int24 referenceTick);
+    event RiskRegimeChanged(PoolId indexed poolId, uint8 oldRegime, uint8 newRegime);
+
     Currency currency0;
     Currency currency1;
 
@@ -107,6 +112,16 @@ contract DirectionalToxicityShieldTest is BaseTest {
         assertEq(state.lastFee, policy.baseFee);
         assertEq(state.regime, 0);
         assertEq(hook.getCurrentRegime(poolId), 0);
+    }
+
+    function test_afterInitialize_emitsPoolPolicyInitialized() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit PoolPolicyInitialized(poolId, 3000, 500, 10000);
+
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
     }
 
     function test_previewFee_returnsBaseFeeInCalmState() public {
@@ -200,6 +215,19 @@ contract DirectionalToxicityShieldTest is BaseTest {
         DirectionalToxicityShield.DirectionalState memory state = hook.getDirectionalState(poolId);
         assertEq(state.pressure, 10);
         assertEq(state.lastTick, 10);
+    }
+
+    function test_updatePressure_emitsPressureAndRegimeEvents() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit DirectionalPressureUpdated(poolId, 10, 10, 0);
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit RiskRegimeChanged(poolId, 0, 1);
+
+        hook.updatePressureForTest(poolId, 10);
     }
 
     function test_updatePressure_resetsAfterDecayWindow() public {
@@ -299,6 +327,27 @@ contract DirectionalToxicityShieldTest is BaseTest {
 
         DirectionalToxicityShield.DirectionalState memory state = hook.getDirectionalState(poolId);
         assertEq(state.lastFee, 3500);
+    }
+
+    function test_swap_emitsFeeOverrideApplied() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        hook.setPressure(poolId, 100);
+
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit FeeOverrideApplied(poolId, false, 3500, 100, 0);
+
+        swapRouter.swapExactTokensForTokens({
+            amountIn: 1e18,
+            amountOutMin: 0,
+            zeroForOne: false,
+            poolKey: dynamicFeeKey,
+            hookData: Constants.ZERO_BYTES,
+            receiver: address(this),
+            deadline: block.timestamp + 1
+        });
     }
 
     function test_swapExactOut_recordsAppliedOverrideFee() public {
