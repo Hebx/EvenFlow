@@ -8,6 +8,14 @@ contract DirectionalToxicityShieldSimulation is Script {
     address private constant DEPLOYED_CLANKER_STATIC_FEE_HOOK = 0xDd5EeaFf7BD481AD55Db083062b13a3cdf0A68CC;
     uint24 private constant OBSERVED_CLANKER_FEE = 10_000;
     uint24 private constant OBSERVED_PAIRED_FEE = 5_000;
+    uint24 private constant NEZLOBIN_BASE_FEE = 3_000;
+    uint24 private constant NEZLOBIN_MIN_FEE = 500;
+    uint24 private constant REGIS_MAX_FEE = 50_000;
+    uint24 private constant NEZLOBIN_SCALE = 1_000;
+    uint24 private constant NEZLOBIN_C = 750;
+    uint24 private constant JASEEMPK_INITIAL_FEE = 1_000;
+    uint24 private constant JASEEMPK_NORMALIZED_STEP_PER_TICK = 10;
+    uint24 private constant JASEEMPK_NORMALIZED_MAX_STEP = 500;
 
     struct FeePolicy {
         uint24 baseFee;
@@ -38,19 +46,47 @@ contract DirectionalToxicityShieldSimulation is Script {
     struct ScenarioResult {
         uint256 staticFees;
         uint256 plainDirectionalFees;
+        uint256 asymmetricPreviousMoveFees;
+        uint256 regisNezlobinFees;
+        uint256 infHookNezlobinFees;
+        uint256 jaseempkThresholdFees;
         uint256 deployedFixedDirectionalFees;
         uint256 shieldFees;
+        uint24 maxAsymmetricPreviousMoveFee;
+        uint24 maxRegisNezlobinFee;
+        uint24 maxInfHookNezlobinFee;
+        uint24 maxJaseempkThresholdFee;
         uint24 maxDeployedFixedDirectionalFee;
         uint24 maxShieldFee;
         int56 finalPressure;
     }
 
-    function run() external view {
-        FeePolicy memory policy = _defaultPolicy();
+    struct StepFees {
+        uint24 plainDirectionalFee;
+        uint24 asymmetricPreviousMoveFee;
+        uint24 regisNezlobinFee;
+        uint24 infHookNezlobinFee;
+        uint24 jaseempkThresholdFee;
+        uint24 deployedFixedDirectionalFee;
+        uint24 shieldFee;
+    }
 
-        _logScenario("one-direction toxic flow", _simulate(_oneDirectionScenario(), policy));
-        _logScenario("alternating flow", _simulate(_alternatingScenario(), policy));
-        _logScenario("toxic flow then quiet", _simulate(_quietResetScenario(), policy));
+    function run() external view {
+        _logScenario("one-direction toxic flow", simulateOneDirection());
+        _logScenario("alternating flow", simulateAlternating());
+        _logScenario("toxic flow then quiet", simulateQuietReset());
+    }
+
+    function simulateOneDirection() public view returns (ScenarioResult memory) {
+        return _simulate(_oneDirectionScenario(), _defaultPolicy());
+    }
+
+    function simulateAlternating() public view returns (ScenarioResult memory) {
+        return _simulate(_alternatingScenario(), _defaultPolicy());
+    }
+
+    function simulateQuietReset() public view returns (ScenarioResult memory) {
+        return _simulate(_quietResetScenario(), _defaultPolicy());
     }
 
     function _simulate(Step[] memory steps, FeePolicy memory policy)
@@ -61,24 +97,27 @@ contract DirectionalToxicityShieldSimulation is Script {
         DirectionalState memory shieldState;
         int24 currentTick;
         int24 previousTickMove;
+        JdsState memory jdsState;
+        uint24 infHookCurrentFee = NEZLOBIN_BASE_FEE;
+        uint24 jaseempkCurrentFee = JASEEMPK_INITIAL_FEE;
         uint40 nowTime = uint40(block.timestamp);
 
         for (uint256 i = 0; i < steps.length; i++) {
             Step memory step = steps[i];
             nowTime += step.elapsed;
 
-            uint24 shieldFee = _shieldFee(shieldState, policy, step.zeroForOne, nowTime);
-            uint24 plainFee = _plainDirectionalFee(previousTickMove, policy, step.zeroForOne);
-            uint24 deployedFixedDirectionalFee = _deployedFixedDirectionalFee(step.zeroForOne);
+            StepFees memory fees;
+            fees.shieldFee = _shieldFee(shieldState, policy, step.zeroForOne, nowTime);
+            fees.plainDirectionalFee = _plainDirectionalFee(previousTickMove, policy, step.zeroForOne);
+            fees.asymmetricPreviousMoveFee = _jdsAsymmetricFee(jdsState, previousTickMove, step.zeroForOne);
+            fees.regisNezlobinFee = _regisNezlobinFee(previousTickMove, step.zeroForOne);
+            infHookCurrentFee = _infHookNezlobinFee(previousTickMove, step.zeroForOne, infHookCurrentFee);
+            fees.infHookNezlobinFee = infHookCurrentFee;
+            jaseempkCurrentFee = _jaseempkThresholdFee(previousTickMove, step.zeroForOne, jaseempkCurrentFee);
+            fees.jaseempkThresholdFee = jaseempkCurrentFee;
+            fees.deployedFixedDirectionalFee = _deployedFixedDirectionalFee(step.zeroForOne);
 
-            result.staticFees += _feeAmount(step.notional, policy.baseFee);
-            result.plainDirectionalFees += _feeAmount(step.notional, plainFee);
-            result.deployedFixedDirectionalFees += _feeAmount(step.notional, deployedFixedDirectionalFee);
-            result.shieldFees += _feeAmount(step.notional, shieldFee);
-            if (deployedFixedDirectionalFee > result.maxDeployedFixedDirectionalFee) {
-                result.maxDeployedFixedDirectionalFee = deployedFixedDirectionalFee;
-            }
-            if (shieldFee > result.maxShieldFee) result.maxShieldFee = shieldFee;
+            _recordStep(result, step.notional, policy.baseFee, fees);
 
             currentTick += step.tickMove;
             _updatePressure(shieldState, policy, currentTick, nowTime);
@@ -86,6 +125,40 @@ contract DirectionalToxicityShieldSimulation is Script {
         }
 
         result.finalPressure = shieldState.pressure;
+    }
+
+    function _recordStep(ScenarioResult memory result, uint128 notional, uint24 staticFee, StepFees memory fees)
+        private
+        pure
+    {
+        result.staticFees += _feeAmount(notional, staticFee);
+        result.plainDirectionalFees += _feeAmount(notional, fees.plainDirectionalFee);
+        result.asymmetricPreviousMoveFees += _feeAmount(notional, fees.asymmetricPreviousMoveFee);
+        result.regisNezlobinFees += _feeAmount(notional, fees.regisNezlobinFee);
+        result.infHookNezlobinFees += _feeAmount(notional, fees.infHookNezlobinFee);
+        result.jaseempkThresholdFees += _feeAmount(notional, fees.jaseempkThresholdFee);
+        result.deployedFixedDirectionalFees += _feeAmount(notional, fees.deployedFixedDirectionalFee);
+        result.shieldFees += _feeAmount(notional, fees.shieldFee);
+
+        if (fees.asymmetricPreviousMoveFee > result.maxAsymmetricPreviousMoveFee) {
+            result.maxAsymmetricPreviousMoveFee = fees.asymmetricPreviousMoveFee;
+        }
+        if (fees.regisNezlobinFee > result.maxRegisNezlobinFee) result.maxRegisNezlobinFee = fees.regisNezlobinFee;
+        if (fees.infHookNezlobinFee > result.maxInfHookNezlobinFee) {
+            result.maxInfHookNezlobinFee = fees.infHookNezlobinFee;
+        }
+        if (fees.jaseempkThresholdFee > result.maxJaseempkThresholdFee) {
+            result.maxJaseempkThresholdFee = fees.jaseempkThresholdFee;
+        }
+        if (fees.deployedFixedDirectionalFee > result.maxDeployedFixedDirectionalFee) {
+            result.maxDeployedFixedDirectionalFee = fees.deployedFixedDirectionalFee;
+        }
+        if (fees.shieldFee > result.maxShieldFee) result.maxShieldFee = fees.shieldFee;
+    }
+
+    struct JdsState {
+        uint24 feeDelta;
+        int8 sign;
     }
 
     function _shieldFee(DirectionalState memory state, FeePolicy memory policy, bool zeroForOne, uint40 nowTime)
@@ -123,6 +196,85 @@ contract DirectionalToxicityShieldSimulation is Script {
         if (aligned) return _clampFee(policy.baseFee + adjustment, policy);
 
         return _clampFee(policy.baseFee > adjustment ? policy.baseFee - adjustment : 0, policy);
+    }
+
+    function _jdsAsymmetricFee(JdsState memory state, int24 previousTickMove, bool zeroForOne)
+        private
+        pure
+        returns (uint24)
+    {
+        // Jds-23/asymmetric-fees-hook uses prior sqrt-price movement and a 0.75 multiplier.
+        // This normalized model maps the same previous-move idea onto tick movement.
+        if (previousTickMove != 0) {
+            state.sign = previousTickMove > 0 ? int8(1) : int8(-1);
+            state.feeDelta = _sourceNezlobinDelta(_absTickMove(previousTickMove), NEZLOBIN_BASE_FEE);
+        }
+
+        if (state.sign == 0) return NEZLOBIN_BASE_FEE;
+
+        bool premium = zeroForOne ? state.sign == -1 : state.sign == 1;
+        if (premium) return NEZLOBIN_BASE_FEE + state.feeDelta;
+
+        return NEZLOBIN_BASE_FEE > state.feeDelta ? NEZLOBIN_BASE_FEE - state.feeDelta : 0;
+    }
+
+    function _regisNezlobinFee(int24 previousTickMove, bool zeroForOne) private pure returns (uint24) {
+        // RegisGraptin/Uniswap-Nezlobin-Hook uses abs(tickDelta) * 750 / 1000,
+        // then skews by swap side rather than tick sign.
+        if (previousTickMove == 0) return NEZLOBIN_BASE_FEE;
+
+        uint24 deltaFee = _sourceNezlobinDelta(_absTickMove(previousTickMove), type(uint24).max);
+        if (zeroForOne) {
+            if (deltaFee > NEZLOBIN_BASE_FEE - NEZLOBIN_MIN_FEE) return NEZLOBIN_MIN_FEE;
+            return NEZLOBIN_BASE_FEE - deltaFee;
+        }
+
+        uint256 premium = uint256(NEZLOBIN_BASE_FEE) + deltaFee;
+        return premium > REGIS_MAX_FEE ? REGIS_MAX_FEE : uint24(premium);
+    }
+
+    function _infHookNezlobinFee(int24 previousTickMove, bool zeroForOne, uint24 currentFee)
+        private
+        pure
+        returns (uint24)
+    {
+        // emrhncvsgl/InfHook calculates beta through integer c = 750 * base / (delta * 1000),
+        // so beta is roughly 2250 for the tick sizes in these scenarios.
+        uint24 tickDelta = _absTickMove(previousTickMove);
+        if (tickDelta == 0) return currentFee;
+
+        uint24 c = uint24((uint256(NEZLOBIN_C) * NEZLOBIN_BASE_FEE) / (uint256(tickDelta) * NEZLOBIN_SCALE));
+        uint24 beta = c * tickDelta;
+
+        if (!zeroForOne) return NEZLOBIN_BASE_FEE + beta;
+        if (beta > NEZLOBIN_BASE_FEE) return NEZLOBIN_MIN_FEE;
+        return NEZLOBIN_BASE_FEE - beta;
+    }
+
+    function _jaseempkThresholdFee(int24 previousTickMove, bool zeroForOne, uint24 currentFee)
+        private
+        pure
+        returns (uint24)
+    {
+        // Jaseempk/NZ-Directional-Fee is thresholded, owner-tuned, and liquidity/oracle shaped.
+        // This tick-normalized model keeps its stateful threshold direction while avoiding oracle inputs.
+        if (_absTickMove(previousTickMove) < 20) return currentFee;
+
+        uint24 cDelta = _absTickMove(previousTickMove) * JASEEMPK_NORMALIZED_STEP_PER_TICK;
+        if (cDelta > JASEEMPK_NORMALIZED_MAX_STEP) cDelta = JASEEMPK_NORMALIZED_MAX_STEP;
+
+        bool token0PricePumping = previousTickMove > 0;
+        bool premium = token0PricePumping ? !zeroForOne : zeroForOne;
+        if (premium) return currentFee + cDelta;
+
+        if (cDelta >= currentFee) return 1;
+        return currentFee - cDelta;
+    }
+
+    function _sourceNezlobinDelta(uint24 tickDelta, uint24 cap) private pure returns (uint24) {
+        uint256 deltaFee = uint256(tickDelta) * NEZLOBIN_C / NEZLOBIN_SCALE;
+        if (deltaFee > cap) return cap;
+        return uint24(deltaFee);
     }
 
     function _updatePressure(DirectionalState memory state, FeePolicy memory policy, int24 currentTick, uint40 nowTime)
@@ -185,8 +337,16 @@ contract DirectionalToxicityShieldSimulation is Script {
         console2.log("  deployed comparator:    ", DEPLOYED_CLANKER_STATIC_FEE_HOOK);
         console2.log("  static fees:            ", result.staticFees);
         console2.log("  plain directional fees: ", result.plainDirectionalFees);
+        console2.log("  JDS asymmetric fees:    ", result.asymmetricPreviousMoveFees);
+        console2.log("  Regis NZ fees:          ", result.regisNezlobinFees);
+        console2.log("  InfHook NZ fees:        ", result.infHookNezlobinFees);
+        console2.log("  Jaseempk NZ fees:       ", result.jaseempkThresholdFees);
         console2.log("  deployed fixed-dir fees:", result.deployedFixedDirectionalFees);
         console2.log("  shield fees:            ", result.shieldFees);
+        console2.log("  max JDS fee:            ", result.maxAsymmetricPreviousMoveFee);
+        console2.log("  max Regis NZ fee:       ", result.maxRegisNezlobinFee);
+        console2.log("  max InfHook NZ fee:     ", result.maxInfHookNezlobinFee);
+        console2.log("  max Jaseempk NZ fee:    ", result.maxJaseempkThresholdFee);
         console2.log("  max deployed fixed fee: ", result.maxDeployedFixedDirectionalFee);
         console2.log("  max shield fee:         ", result.maxShieldFee);
         console2.log("  final shield pressure:  ", int256(result.finalPressure));
