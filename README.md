@@ -63,6 +63,19 @@ forge script script/testnet/UnichainSepoliaScenario.s.sol:UnichainSepoliaScenari
 
 The first successful Unichain Sepolia run is recorded in [deployments/unichain-sepolia-stage3-2026-05-25.md](deployments/unichain-sepolia-stage3-2026-05-25.md).
 
+Stage 3 Base Sepolia scenario uses the same mock-token flow against canonical v4 deployments:
+
+```bash
+forge script script/testnet/BaseSepoliaScenario.s.sol:BaseSepoliaScenario \
+  --rpc-url "$BASE_SEPOLIA_RPC_URL"
+
+forge script script/testnet/BaseSepoliaScenario.s.sol:BaseSepoliaScenario \
+  --rpc-url "$BASE_SEPOLIA_RPC_URL" \
+  --broadcast
+```
+
+Base Sepolia USDC is optional for the MVP proof. Use the mock-token scenario first to verify hook mechanics, then add a USDC-paired demo only after confirming the current testnet USDC address and the deployer balance.
+
 ### Simulation
 
 ```bash
