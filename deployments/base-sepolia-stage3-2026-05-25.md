@@ -62,3 +62,25 @@ Foundry broadcast artifact:
 ```text
 broadcast/BaseSepoliaScenario.s.sol/84532/run-latest.json
 ```
+
+## Existing-hook reuse check
+
+The scenario was also rerun in dry-run mode with `DTS_HOOK_ADDRESS=0xdf1b6843711039408b3b87572F9E9830BCcaF0C0` to confirm later scenario runs can target the already deployed hook instead of deploying another mined hook.
+
+Dry-run result:
+
+- Hook reused: `0xdf1b6843711039408b3b87572F9E9830BCcaF0C0`
+- PoolId: `0xa5d2d0ea1f66722a9621fbde1370e6b44554e4c8ed3732a830b84d8d8010ca4b`
+- `firstFee`: `3000`
+- `secondFee`: `3500`
+- `pressure`: `500`
+- `lastTick`: `394`
+- `regime`: `2`
+
+Command:
+
+```bash
+DTS_HOOK_ADDRESS=0xdf1b6843711039408b3b87572F9E9830BCcaF0C0 \
+forge script script/testnet/BaseSepoliaScenario.s.sol:BaseSepoliaScenario \
+  --rpc-url "$BASE_SEPOLIA_RPC_URL"
+```
