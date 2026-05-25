@@ -60,6 +60,33 @@ Latest deterministic one-direction toxic-flow output:
 
 Takeaway: Shield is intentionally more responsive than thin previous-move Nezlobin examples but far less extreme than fixed 1% directional pricing. Its main strength is controlled responsiveness: bounded pressure, bounded fee step, and decay/reset behavior.
 
+## Model backtest evidence
+
+The repo also includes `script/DirectionalToxicityShieldBacktest.s.sol`, which compares the same replay paths across modeled versions of:
+
+- AsymmetricFeesHook / JDS previous-move Nezlobin.
+- Anti-Toxicity Hook-style directional imbalance.
+- Dynamic AMM Fees-style volatility and trade-size pricing.
+- DetoxHook-style oracle arbitrage capture.
+- VPIN-style volume imbalance.
+- Directional Toxicity Shield.
+
+These are deterministic same-flow model backtests, not audited reimplementations of competitor contracts.
+
+Latest output:
+
+| Replay | Static | JDS | Anti-Toxicity | Dynamic AMM | Detox oracle | VPIN | Shield | Shield max fee | Shield final pressure |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Adverse trend | `18000000000000000000000` | `18090000000000000000000` | `22420000000000000000000` | `26580000000000000000000` | `51600000000000000000000` | `53000000000000000000000` | `20240000000000000000000` | `3500` | `500` |
+| Mean reversion | `18000000000000000000000` | `17933000000000000000000` | `16820000000000000000000` | `25080000000000000000000` | `18000000000000000000000` | `27483000000000000000000` | `17560000000000000000000` | `3500` | `66` |
+| Quiet after toxic | `15000000000000000000000` | `15084000000000000000000` | `17432000000000000000000` | `19950000000000000000000` | `24800000000000000000000` | `43000000000000000000000` | `15280000000000000000000` | `3280` | `12` |
+
+Interpretation:
+
+- In adverse trend, Shield charges above static but stays far below oracle/VPIN-style aggressive pricing.
+- In mean reversion, Shield and Anti-Toxicity discount counter-pressure flow; volatility-only pricing keeps fees high because it does not distinguish helpful rebalancing.
+- After quiet periods, Shield pressure decays back toward base pricing; previous-move models can retain stale directional bias.
+
 ## Positioning line
 
 Use this:

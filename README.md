@@ -84,6 +84,14 @@ The first successful Base Sepolia mock-token run is recorded in [deployments/bas
 forge script script/DirectionalToxicityShieldSimulation.s.sol:DirectionalToxicityShieldSimulation
 ```
 
+### Backtests
+
+```bash
+forge script script/DirectionalToxicityShieldBacktest.s.sol:DirectionalToxicityShieldBacktest
+```
+
+The backtest harness compares Shield against modeled prior-art mechanisms: AsymmetricFeesHook/JDS previous-move Nezlobin, Anti-Toxicity Hook-style directional imbalance, Dynamic AMM Fees-style volatility/size pricing, DetoxHook-style oracle arbitrage capture, and VPIN-style volume imbalance. These are deterministic same-flow model backtests, not audited reimplementations of competitor contracts.
+
 The simulation compares:
 
 - static fee baseline
