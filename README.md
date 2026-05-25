@@ -76,6 +76,8 @@ forge script script/testnet/BaseSepoliaScenario.s.sol:BaseSepoliaScenario \
 
 Base Sepolia USDC is optional for the MVP proof. Use the mock-token scenario first to verify hook mechanics, then add a USDC-paired demo only after confirming the current testnet USDC address and the deployer balance.
 
+The first successful Base Sepolia mock-token run is recorded in [deployments/base-sepolia-stage3-2026-05-25.md](deployments/base-sepolia-stage3-2026-05-25.md).
+
 ### Simulation
 
 ```bash
