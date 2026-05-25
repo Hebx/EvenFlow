@@ -19,6 +19,29 @@ forge build
 forge test
 ```
 
+### Onchain Test Gates
+
+Stage 1 runs the directional scenario against a fresh local Foundry v4 deployment:
+
+```bash
+forge test --match-contract DirectionalToxicityShieldOnchainTest \
+  --match-test test_stage1LocalFreshV4RunsDirectionalScenario -vvv
+```
+
+Stage 2 runs the same scenario on forks against canonical Uniswap v4 deployments:
+
+```bash
+forge test --fork-url https://mainnet.base.org \
+  --match-contract DirectionalToxicityShieldOnchainTest \
+  --match-test 'test_stage2*' -vvv
+
+forge test --fork-url https://mainnet.unichain.org \
+  --match-contract DirectionalToxicityShieldOnchainTest \
+  --match-test 'test_stage2*' -vvv
+```
+
+Do not broadcast to testnet until both gates pass. Stage 3 target is Unichain Sepolia, using the official v4 `PoolManager` at `0x00B036B58a818B1BC34d502D3fE730Db729e62AC`. Use a funded keystore account and record the deployed hook address, pool id, token addresses, swap transactions, and explorer links before treating any testnet result as proof.
+
 ### Simulation
 
 ```bash
