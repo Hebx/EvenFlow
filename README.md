@@ -42,6 +42,27 @@ forge test --fork-url https://mainnet.unichain.org \
 
 Do not broadcast to testnet until both gates pass. Stage 3 target is Unichain Sepolia, using the official v4 `PoolManager` at `0x00B036B58a818B1BC34d502D3fE730Db729e62AC`. Use a funded keystore account and record the deployed hook address, pool id, token addresses, swap transactions, and explorer links before treating any testnet result as proof.
 
+Stage 3 Unichain Sepolia scenario:
+
+```bash
+forge script script/testnet/UnichainSepoliaScenario.s.sol:UnichainSepoliaScenario \
+  --rpc-url "$UNICHAIN_SEPOLIA_RPC_URL"
+
+forge script script/testnet/UnichainSepoliaScenario.s.sol:UnichainSepoliaScenario \
+  --rpc-url "$UNICHAIN_SEPOLIA_RPC_URL" \
+  --broadcast
+```
+
+Set `DTS_HOOK_ADDRESS` when rerunning the scenario against an already deployed hook instead of deploying a new mined hook:
+
+```bash
+DTS_HOOK_ADDRESS=0xE7cd65413205e10B4005017F8d000a66E43970c0 \
+forge script script/testnet/UnichainSepoliaScenario.s.sol:UnichainSepoliaScenario \
+  --rpc-url "$UNICHAIN_SEPOLIA_RPC_URL"
+```
+
+The first successful Unichain Sepolia run is recorded in [deployments/unichain-sepolia-stage3-2026-05-25.md](deployments/unichain-sepolia-stage3-2026-05-25.md).
+
 ### Simulation
 
 ```bash
