@@ -16,3 +16,9 @@ docs/
 
 # Node modules
 node_modules/
+
+# macOS metadata
+.DS_Store
+
+# Vendored prior-art repos used only for local source review (not part of build)
+external-hooks/
