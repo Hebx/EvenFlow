@@ -44,6 +44,8 @@ From `test/PriorArtComparison.t.sol` (real bytecode of Shield + 4 prior-art hook
 
 **Backtest fee totals** (deterministic synthetic replay, `script/DirectionalToxicityShieldBacktest.s.sol`): across adverse-trend / mean-reversion / quiet-after-toxic scenarios the Shield lands close to the static baseline on benign flow while charging more only when pressure is real — vs detox-oracle and VPIN models that overcharge broadly (e.g. adverse-trend: shield 20,240 vs VPIN 53,000 vs detox 51,600, static 18,000).
 
+**Smoothing proof layer** (variance reduction, conservation, IL/LVR on a shared price path): full scoreboard with reproducible numbers and the head-to-head with the in-ecosystem `LiquidityPenaltyHook` is in [docs/product/smoothing-proof-evidence.md](product/smoothing-proof-evidence.md). Headline: burst-then-quiet variance efficacy +6093 bps (CoV 429 → 168), conservation hard-gated, choppy scenario strands the reserve and motivates the Reactive CRON drip.
+
 > Honesty note for any public claim: these are model/same-flow comparisons and a live-infra fork test, not a live capital A/B on mainnet. We say exactly that. The strongest current claim is "runs against the real canonical v4 PoolManager that production hooks use, with reproducible behavioral differences" — not "earns X% more for LPs in production."
 
 ## Who it's for
