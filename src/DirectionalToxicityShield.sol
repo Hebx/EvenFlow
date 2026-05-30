@@ -84,12 +84,14 @@ contract DirectionalToxicityShield is BaseHook {
     event RiskRegimeChanged(PoolId indexed poolId, uint8 oldRegime, uint8 newRegime);
     event SmoothingConfigured(PoolId indexed poolId, bool enabled, uint32 dripBlockInterval, uint16 dripBps);
     event PremiumCaptured(PoolId indexed poolId, uint128 amount0, uint128 amount1);
+    event DripReleased(PoolId indexed poolId, uint128 amount0, uint128 amount1);
 
     /// @dev Transient storage slot for the premium capture amount to pass from beforeSwap to afterSwap.
     /// keccak256(abi.encode(uint256(keccak256("DirectionalToxicityShield.premiumCapture")) - 1)) & ~bytes32(uint256(0xff))
     bytes32 private constant PREMIUM_CAPTURE_SLOT = 0x8a35acfbc15ff81a39ae7d344fd709f28e8600b4aa8c65c6b64bfe7fe36bd900;
     uint256 private constant PREMIUM_BPS_OFFSET = 0;
     uint256 private constant PREMIUM_APPLY_OFFSET = 1;
+    uint256 private constant PRE_SWAP_QUIET_OFFSET = 2;
 
     mapping(PoolId poolId => FeePolicy policy) internal feePolicies;
     mapping(PoolId poolId => DirectionalState state) internal directionalStates;
@@ -167,6 +169,9 @@ contract DirectionalToxicityShield is BaseHook {
 
         emit FeeOverrideApplied(poolId, params.zeroForOne, fee, effectivePressure, regime);
 
+        // Store pre-swap quiet flag for drip eligibility in afterSwap.
+        _setTransientPreSwapQuiet(regime == 0);
+
         // Smoothing capture: when enabled and the swap is aligned (fee > baseFee),
         // set the LP fee to baseFee only and store the premium fraction in transient
         // storage for afterSwap to capture.
@@ -197,56 +202,66 @@ contract DirectionalToxicityShield is BaseHook {
         returns (bytes4, int128)
     {
         PoolId poolId = key.toId();
+
+        // Read the pre-swap quiet flag set by _beforeSwap (based on effective/decayed regime).
+        bool wasQuiet = _transientPreSwapQuiet();
+
         (, int24 currentTick,,) = poolManager.getSlot0(poolId);
         _updatePressure(poolId, currentTick);
 
         // Premium capture: if beforeSwap flagged this swap for capture, skim the
         // premium from the unspecified currency and escrow it in the reserve.
-        if (!_transientApplyCapture()) {
-            return (BaseHook.afterSwap.selector, 0);
+        if (_transientApplyCapture()) {
+            // Reset transient state
+            uint256 premiumBps = _transientPremiumBps();
+            _setTransientApplyCapture(false);
+            _setTransientPremiumBps(0);
+
+            // Identify unspecified currency and its absolute amount (mirrors BaseDynamicAfterFee)
+            bool exactInput = params.amountSpecified < 0;
+            (Currency unspecified, int128 unspecifiedAmount) =
+                (exactInput == params.zeroForOne) ? (key.currency1, delta.amount1()) : (key.currency0, delta.amount0());
+
+            // For exactInput, unspecified is output (positive = tokens out to swapper).
+            // For exactOutput, unspecified is input (negative = tokens in from swapper).
+            uint256 absUnspecified;
+            if (unspecifiedAmount < 0) {
+                absUnspecified = uint256(uint128(-unspecifiedAmount));
+            } else {
+                absUnspecified = uint256(uint128(unspecifiedAmount));
+            }
+
+            // Compute premium to capture
+            uint256 feeAmount = (absUnspecified * premiumBps) / 10_000;
+            if (feeAmount == 0) return (BaseHook.afterSwap.selector, 0);
+
+            // Take ERC-6909 claims into this hook
+            unspecified.take(poolManager, address(this), feeAmount, true);
+
+            // Credit the smoothing reserve
+            SmoothingReserve storage reserve = smoothingReserves[poolId];
+            if (unspecified == key.currency0) {
+                reserve.reserve0 += uint128(feeAmount);
+            } else {
+                reserve.reserve1 += uint128(feeAmount);
+            }
+
+            emit PremiumCaptured(
+                poolId,
+                unspecified == key.currency0 ? uint128(feeAmount) : 0,
+                unspecified == key.currency1 ? uint128(feeAmount) : 0
+            );
+
+            return (BaseHook.afterSwap.selector, feeAmount.toInt128());
         }
 
-        // Reset transient state
-        uint256 premiumBps = _transientPremiumBps();
-        _setTransientApplyCapture(false);
-        _setTransientPremiumBps(0);
-
-        // Identify unspecified currency and its absolute amount (mirrors BaseDynamicAfterFee)
-        bool exactInput = params.amountSpecified < 0;
-        (Currency unspecified, int128 unspecifiedAmount) =
-            (exactInput == params.zeroForOne) ? (key.currency1, delta.amount1()) : (key.currency0, delta.amount0());
-
-        // For exactInput, unspecified is output (positive = tokens out to swapper).
-        // For exactOutput, unspecified is input (negative = tokens in from swapper).
-        uint256 absUnspecified;
-        if (unspecifiedAmount < 0) {
-            absUnspecified = uint256(uint128(-unspecifiedAmount));
-        } else {
-            absUnspecified = uint256(uint128(unspecifiedAmount));
+        // Drip path: release a bounded slice of the reserve to in-range LPs
+        // when the pool was in quiet regime at the start of this swap.
+        if (wasQuiet) {
+            _tryDrip(key, poolId);
         }
 
-        // Compute premium to capture
-        uint256 feeAmount = (absUnspecified * premiumBps) / 10_000;
-        if (feeAmount == 0) return (BaseHook.afterSwap.selector, 0);
-
-        // Take ERC-6909 claims into this hook
-        unspecified.take(poolManager, address(this), feeAmount, true);
-
-        // Credit the smoothing reserve
-        SmoothingReserve storage reserve = smoothingReserves[poolId];
-        if (unspecified == key.currency0) {
-            reserve.reserve0 += uint128(feeAmount);
-        } else {
-            reserve.reserve1 += uint128(feeAmount);
-        }
-
-        emit PremiumCaptured(
-            poolId,
-            unspecified == key.currency0 ? uint128(feeAmount) : 0,
-            unspecified == key.currency1 ? uint128(feeAmount) : 0
-        );
-
-        return (BaseHook.afterSwap.selector, feeAmount.toInt128());
+        return (BaseHook.afterSwap.selector, 0);
     }
 
     function getFeePolicy(PoolId poolId) external view returns (FeePolicy memory) {
@@ -442,6 +457,61 @@ contract DirectionalToxicityShield is BaseHook {
 
     function _setTransientApplyCapture(bool value) internal {
         PREMIUM_CAPTURE_SLOT.offset(PREMIUM_APPLY_OFFSET).asBoolean().tstore(value);
+    }
+
+    function _transientPreSwapQuiet() internal view returns (bool) {
+        return PREMIUM_CAPTURE_SLOT.offset(PRE_SWAP_QUIET_OFFSET).asBoolean().tload();
+    }
+
+    function _setTransientPreSwapQuiet(bool value) internal {
+        PREMIUM_CAPTURE_SLOT.offset(PRE_SWAP_QUIET_OFFSET).asBoolean().tstore(value);
+    }
+
+    // ─── Drip logic ────────────────────────────────────────────────────────────
+
+    /// @dev Attempt to drip escrowed premium to in-range LPs. Conditions:
+    /// - smoothing enabled
+    /// - reserve has funds
+    /// - at least dripBlockInterval blocks since last drip
+    /// - pool has in-range liquidity (donate reverts otherwise)
+    /// Note: regime check (quiet) is done by the caller before invoking this.
+    function _tryDrip(PoolKey calldata key, PoolId poolId) internal {
+        SmoothingConfig memory config = smoothingConfigs[poolId];
+        if (!config.enabled) return;
+
+        SmoothingReserve storage reserve = smoothingReserves[poolId];
+        if (reserve.reserve0 == 0 && reserve.reserve1 == 0) return;
+
+        uint40 currentBlock = uint40(block.number);
+        if (currentBlock - reserve.lastDripBlock < config.dripBlockInterval) return;
+
+        // Guard: donate reverts with zero in-range liquidity
+        if (poolManager.getLiquidity(poolId) == 0) return;
+
+        // Compute drip amounts (capped fraction of reserve)
+        uint128 drip0 = uint128((uint256(reserve.reserve0) * config.dripBps) / 10_000);
+        uint128 drip1 = uint128((uint256(reserve.reserve1) * config.dripBps) / 10_000);
+
+        // Skip dust drips
+        if (drip0 == 0 && drip1 == 0) return;
+
+        // Settle ERC-6909 claims (burn them to credit the PoolManager)
+        if (drip0 > 0) {
+            key.currency0.settle(poolManager, address(this), drip0, true);
+        }
+        if (drip1 > 0) {
+            key.currency1.settle(poolManager, address(this), drip1, true);
+        }
+
+        // Donate to in-range LPs
+        poolManager.donate(key, drip0, drip1, "");
+
+        // Update reserve
+        reserve.reserve0 -= drip0;
+        reserve.reserve1 -= drip1;
+        reserve.lastDripBlock = currentBlock;
+
+        emit DripReleased(poolId, drip0, drip1);
     }
 
     function _defaultPolicy() private pure returns (FeePolicy memory) {

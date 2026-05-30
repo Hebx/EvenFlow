@@ -882,6 +882,174 @@ contract DirectionalToxicityShieldTest is BaseTest {
         assertEq(state.lastFee, 3500, "lastFee tracks full directional fee");
     }
 
+    // ─── Task 3: Drip Release Tests ───────────────────────────────────────────────
+
+    event DripReleased(PoolId indexed poolId, uint128 amount0, uint128 amount1);
+
+    function test_drip_releasesReserveDuringQuietRegime() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Build pressure and capture premium
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        uint128 reserveBefore = hook.getSmoothingReserve(poolId).reserve0;
+        assertGt(reserveBefore, 0, "reserve should have captured premium");
+
+        // Wait for decay window to reset pressure to 0 (quiet regime)
+        vm.roll(block.number + 10);
+        vm.warp(block.timestamp + 5 minutes);
+
+        // Swap in quiet regime triggers drip
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        uint128 reserveAfter = hook.getSmoothingReserve(poolId).reserve0;
+        assertLt(reserveAfter, reserveBefore, "reserve must decrease after drip");
+    }
+
+    function test_drip_emitsDripReleasedEvent() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Build and capture
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        // Quiet regime
+        vm.roll(block.number + 10);
+        vm.warp(block.timestamp + 5 minutes);
+
+        vm.expectEmit(true, false, false, false, address(hook));
+        emit DripReleased(poolId, 0, 0);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+    }
+
+    function test_drip_respectsBlockInterval() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Build and capture
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        uint128 reserveAfterCapture = hook.getSmoothingReserve(poolId).reserve0;
+
+        // Quiet regime, advance enough blocks for first drip (dripBlockInterval = 5)
+        vm.roll(block.number + 6);
+        vm.warp(block.timestamp + 5 minutes);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        // First drip happens
+        uint128 reserveAfterFirstDrip = hook.getSmoothingReserve(poolId).reserve0;
+        assertLt(reserveAfterFirstDrip, reserveAfterCapture, "first drip should release");
+
+        // Immediately swap again (only 1 block later) — no second drip
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 5 minutes);
+        _swapExactIn(dynamicFeeKey, true, 0.5e18);
+        uint128 reserveAfterTooSoon = hook.getSmoothingReserve(poolId).reserve0;
+        assertEq(reserveAfterTooSoon, reserveAfterFirstDrip, "no drip within dripBlockInterval");
+    }
+
+    function test_drip_releasesCorrectFraction() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Build and capture
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        uint128 reserveBefore = hook.getSmoothingReserve(poolId).reserve0;
+
+        // Quiet regime, enough blocks
+        vm.roll(block.number + 10);
+        vm.warp(block.timestamp + 5 minutes);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        uint128 reserveAfter = hook.getSmoothingReserve(poolId).reserve0;
+        // dripBps = 2000 (20%), so released = reserveBefore * 2000 / 10000
+        uint128 expectedRelease = uint128((uint256(reserveBefore) * 2000) / 10_000);
+        uint128 actualRelease = reserveBefore - reserveAfter;
+        assertEq(actualRelease, expectedRelease, "drip must release exactly dripBps fraction");
+    }
+
+    function test_drip_noDripDuringToxicRegime() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Build pressure and capture
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        uint128 reserveAfterCapture = hook.getSmoothingReserve(poolId).reserve0;
+
+        // Still in toxic regime (no decay), advance blocks but not time
+        vm.roll(block.number + 10);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        // Reserve should only grow (more capture), not shrink (no drip)
+        uint128 reserveAfter = hook.getSmoothingReserve(poolId).reserve0;
+        assertGe(reserveAfter, reserveAfterCapture, "no drip during toxic regime");
+    }
+
+    function test_drip_multipleSequentialDripsDeplete() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Build and capture
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        uint128 reserveStart = hook.getSmoothingReserve(poolId).reserve0;
+
+        // Multiple drip cycles in quiet regime
+        for (uint256 i = 0; i < 5; i++) {
+            vm.roll(block.number + 6);
+            vm.warp(block.timestamp + 5 minutes);
+            _swapExactIn(dynamicFeeKey, true, 0.1e18);
+        }
+
+        uint128 reserveEnd = hook.getSmoothingReserve(poolId).reserve0;
+        assertLt(reserveEnd, reserveStart, "reserve must deplete over multiple drips");
+        // After 5 drips at 20% each: remaining ~ start * 0.8^5 ≈ 32.8%
+        // Allow some tolerance for rounding
+        uint128 expectedMin = uint128((uint256(reserveStart) * 30) / 100);
+        uint128 expectedMax = uint128((uint256(reserveStart) * 35) / 100);
+        assertGe(reserveEnd, expectedMin, "reserve depletion within expected range (lower)");
+        assertLe(reserveEnd, expectedMax, "reserve depletion within expected range (upper)");
+    }
+
     function _disableLiquidityFloor(PoolId poolId) private {
         hook.setFeePolicy(poolId, 3000, 500, 10000, 500, 10, 500, 500_000, 30, 5 minutes, 0, 5);
     }
