@@ -64,6 +64,7 @@ contract DirectionalToxicityShieldOnchainGate is BaseTest {
     function _deployHook() private returns (DirectionalToxicityShield deployedHook) {
         uint160 flags = uint160(
             Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
         bytes memory constructorArgs = abi.encode(poolManager);
         (address hookAddress, bytes32 salt) =
