@@ -24,6 +24,9 @@ contract DirectionalToxicityShield is BaseHook {
     error InvalidDecayFactor();
     error InvalidDecayWindow();
     error InvalidMajorMoveThreshold();
+    error NotPoolConfigurer();
+    error InvalidDripInterval();
+    error InvalidDripBps();
 
     struct FeePolicy {
         uint24 baseFee;
@@ -49,13 +52,34 @@ contract DirectionalToxicityShield is BaseHook {
         uint40 lastPressureBlock;
     }
 
+    /// @dev Per-pool, opt-in yield-smoothing knobs. Disabled by default so the
+    /// base product (pure directional dynamic fee) is unchanged unless the pool
+    /// configurer explicitly enables smoothing via {configureSmoothing}.
+    struct SmoothingConfig {
+        bool enabled;
+        uint32 dripBlockInterval; // minimum blocks between drips
+        uint16 dripBps; // max fraction of reserve released per drip (basis points, <= 10_000)
+    }
+
+    /// @dev Per-pool escrow of the captured toxicity premium, held by the hook
+    /// as ERC-6909 claims between capture (toxic regime) and drip (quiet regime).
+    struct SmoothingReserve {
+        uint128 reserve0;
+        uint128 reserve1;
+        uint40 lastDripBlock;
+    }
+
     event PoolPolicyInitialized(PoolId indexed poolId, uint24 baseFee, uint24 minFee, uint24 maxFee);
     event FeeOverrideApplied(PoolId indexed poolId, bool zeroForOne, uint24 fee, int56 pressure, uint8 regime);
     event DirectionalPressureUpdated(PoolId indexed poolId, int24 tickMove, int56 pressure, int24 referenceTick);
     event RiskRegimeChanged(PoolId indexed poolId, uint8 oldRegime, uint8 newRegime);
+    event SmoothingConfigured(PoolId indexed poolId, bool enabled, uint32 dripBlockInterval, uint16 dripBps);
 
     mapping(PoolId poolId => FeePolicy policy) internal feePolicies;
     mapping(PoolId poolId => DirectionalState state) internal directionalStates;
+    mapping(PoolId poolId => address configurer) internal poolConfigurers;
+    mapping(PoolId poolId => SmoothingConfig config) internal smoothingConfigs;
+    mapping(PoolId poolId => SmoothingReserve reserve) internal smoothingReserves;
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
@@ -83,12 +107,20 @@ contract DirectionalToxicityShield is BaseHook {
         return BaseHook.beforeInitialize.selector;
     }
 
-    function _afterInitialize(address, PoolKey calldata key, uint160, int24 tick) internal override returns (bytes4) {
+    function _afterInitialize(address sender, PoolKey calldata key, uint160, int24 tick)
+        internal
+        override
+        returns (bytes4)
+    {
         PoolId poolId = key.toId();
         FeePolicy memory policy = _defaultPolicy();
         _validatePolicy(policy);
 
         feePolicies[poolId] = policy;
+        // Capture the initializer as the pool configurer. Init hookData is not
+        // available in this v4-core version, so this is the only trust anchor
+        // for later opt-in smoothing configuration.
+        poolConfigurers[poolId] = sender;
         directionalStates[poolId] = DirectionalState({
             referenceTick: tick,
             lastTick: tick,
@@ -139,6 +171,32 @@ contract DirectionalToxicityShield is BaseHook {
 
     function getFeePolicy(PoolId poolId) external view returns (FeePolicy memory) {
         return feePolicies[poolId];
+    }
+
+    /// @notice The address that initialized the pool and may configure smoothing.
+    function getPoolConfigurer(PoolId poolId) external view returns (address) {
+        return poolConfigurers[poolId];
+    }
+
+    /// @notice Current opt-in smoothing configuration for a pool (disabled by default).
+    function getSmoothingConfig(PoolId poolId) external view returns (SmoothingConfig memory) {
+        return smoothingConfigs[poolId];
+    }
+
+    /// @notice Current escrowed smoothing reserve for a pool.
+    function getSmoothingReserve(PoolId poolId) external view returns (SmoothingReserve memory) {
+        return smoothingReserves[poolId];
+    }
+
+    /// @notice Configure (or disable) yield smoothing for a pool. Restricted to
+    /// the pool configurer captured at initialization. Smoothing is opt-in:
+    /// pools that never call this keep the pure directional-fee behavior.
+    function configureSmoothing(PoolKey calldata key, SmoothingConfig calldata config) external {
+        PoolId poolId = key.toId();
+        if (msg.sender != poolConfigurers[poolId]) revert NotPoolConfigurer();
+        _validateSmoothingConfig(config);
+        smoothingConfigs[poolId] = config;
+        emit SmoothingConfigured(poolId, config.enabled, config.dripBlockInterval, config.dripBps);
     }
 
     function getDirectionalState(PoolId poolId) external view returns (DirectionalState memory) {
@@ -278,6 +336,14 @@ contract DirectionalToxicityShield is BaseHook {
         if (policy.decayFactor > 1_000_000) revert InvalidDecayFactor();
         if (policy.decayWindow <= policy.filterWindow) revert InvalidDecayWindow();
         if (policy.majorMoveThreshold < 0) revert InvalidMajorMoveThreshold();
+    }
+
+    /// @dev Validate smoothing knobs. Only meaningful when enabled; a disabled
+    /// config is always valid (it is a no-op opt-out).
+    function _validateSmoothingConfig(SmoothingConfig memory config) internal pure {
+        if (!config.enabled) return;
+        if (config.dripBlockInterval == 0) revert InvalidDripInterval();
+        if (config.dripBps == 0 || config.dripBps > 10_000) revert InvalidDripBps();
     }
 
     function _defaultPolicy() private pure returns (FeePolicy memory) {

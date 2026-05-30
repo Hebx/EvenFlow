@@ -27,6 +27,7 @@ contract DirectionalToxicityShieldTest is BaseTest {
     event FeeOverrideApplied(PoolId indexed poolId, bool zeroForOne, uint24 fee, int56 pressure, uint8 regime);
     event DirectionalPressureUpdated(PoolId indexed poolId, int24 tickMove, int56 pressure, int24 referenceTick);
     event RiskRegimeChanged(PoolId indexed poolId, uint8 oldRegime, uint8 newRegime);
+    event SmoothingConfigured(PoolId indexed poolId, bool enabled, uint32 dripBlockInterval, uint16 dripBps);
 
     Currency currency0;
     Currency currency1;
@@ -640,6 +641,106 @@ contract DirectionalToxicityShieldTest is BaseTest {
         }
         int56 finalPressure = hook.getDirectionalState(poolId).pressure;
         assertLt(finalPressure, int56(500), "single-block stuffing must not reach maxPressure");
+    }
+
+    function test_configureSmoothing_capturesInitializerAsConfigurer() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+
+        assertEq(hook.getPoolConfigurer(poolId), address(this));
+    }
+
+    function test_smoothing_defaultsDisabled() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+
+        DirectionalToxicityShield.SmoothingConfig memory config = hook.getSmoothingConfig(poolId);
+        assertEq(config.enabled, false);
+        assertEq(config.dripBlockInterval, 0);
+        assertEq(config.dripBps, 0);
+
+        DirectionalToxicityShield.SmoothingReserve memory reserve = hook.getSmoothingReserve(poolId);
+        assertEq(reserve.reserve0, 0);
+        assertEq(reserve.reserve1, 0);
+        assertEq(reserve.lastDripBlock, 0);
+    }
+
+    function test_configureSmoothing_setsConfigForConfigurer() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+
+        DirectionalToxicityShield.SmoothingConfig memory config =
+            DirectionalToxicityShield.SmoothingConfig({enabled: true, dripBlockInterval: 10, dripBps: 2000});
+
+        vm.expectEmit(true, false, false, true, address(hook));
+        emit SmoothingConfigured(poolId, true, 10, 2000);
+        hook.configureSmoothing(dynamicFeeKey, config);
+
+        DirectionalToxicityShield.SmoothingConfig memory got = hook.getSmoothingConfig(poolId);
+        assertEq(got.enabled, true);
+        assertEq(got.dripBlockInterval, 10);
+        assertEq(got.dripBps, 2000);
+    }
+
+    function test_configureSmoothing_revertsForNonConfigurer() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+
+        DirectionalToxicityShield.SmoothingConfig memory config =
+            DirectionalToxicityShield.SmoothingConfig({enabled: true, dripBlockInterval: 10, dripBps: 2000});
+
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(DirectionalToxicityShield.NotPoolConfigurer.selector);
+        hook.configureSmoothing(dynamicFeeKey, config);
+    }
+
+    function test_configureSmoothing_revertsOnZeroDripInterval() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+
+        DirectionalToxicityShield.SmoothingConfig memory config =
+            DirectionalToxicityShield.SmoothingConfig({enabled: true, dripBlockInterval: 0, dripBps: 2000});
+
+        vm.expectRevert(DirectionalToxicityShield.InvalidDripInterval.selector);
+        hook.configureSmoothing(dynamicFeeKey, config);
+    }
+
+    function test_configureSmoothing_revertsOnZeroDripBps() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+
+        DirectionalToxicityShield.SmoothingConfig memory config =
+            DirectionalToxicityShield.SmoothingConfig({enabled: true, dripBlockInterval: 10, dripBps: 0});
+
+        vm.expectRevert(DirectionalToxicityShield.InvalidDripBps.selector);
+        hook.configureSmoothing(dynamicFeeKey, config);
+    }
+
+    function test_configureSmoothing_revertsOnDripBpsAboveMax() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+
+        DirectionalToxicityShield.SmoothingConfig memory config =
+            DirectionalToxicityShield.SmoothingConfig({enabled: true, dripBlockInterval: 10, dripBps: 10_001});
+
+        vm.expectRevert(DirectionalToxicityShield.InvalidDripBps.selector);
+        hook.configureSmoothing(dynamicFeeKey, config);
+    }
+
+    function test_configureSmoothing_acceptsDisabledConfigWithoutValidation() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+
+        // A disabled config is a valid opt-out even with otherwise-invalid knobs.
+        DirectionalToxicityShield.SmoothingConfig memory config =
+            DirectionalToxicityShield.SmoothingConfig({enabled: false, dripBlockInterval: 0, dripBps: 0});
+
+        hook.configureSmoothing(dynamicFeeKey, config);
+        assertEq(hook.getSmoothingConfig(poolId).enabled, false);
     }
 
     function _disableLiquidityFloor(PoolId poolId) private {
