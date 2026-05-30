@@ -12,6 +12,7 @@ out/
 docs/*
 !docs/POSITIONING.md
 !docs/plans/
+!docs/demos/
 docs/plans/*
 !docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md
 

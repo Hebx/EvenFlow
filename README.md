@@ -144,6 +144,13 @@ forge test --match-contract DirectionalToxicityShieldMainnetComparisonTest \
 
 Against the Base mainnet fork this confirms the live Clanker hook (12,558 bytes of deployed code) shares the canonical `PoolManager` (`0x498581fF718922c3f8e6A244956aF099B2652b2b`) that the freshly mined Shield deploys against — so the comparison is against real production infrastructure, not a mock. The static hook holds a fixed fee through toxic, counter-flow, and quiet phases while the Shield escalates (3000→3500), discounts counter-flow (2500), and decays back to base (3000).
 
+For a narrated end-to-end fee journey on that same real PoolManager, see the captured artifact in [docs/demos/base-mainnet-fork-fee-timeline.md](docs/demos/base-mainnet-fork-fee-timeline.md), reproducible via [test/DirectionalToxicityShieldLiveDemo.t.sol](test/DirectionalToxicityShieldLiveDemo.t.sol):
+
+```bash
+forge test --match-contract DirectionalToxicityShieldLiveDemoTest \
+  --fork-url "$BASE_MAINNET_RPC_URL" -vv
+```
+
 ### Simulation
 
 ```bash
