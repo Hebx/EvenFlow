@@ -594,6 +594,54 @@ contract DirectionalToxicityShieldTest is BaseTest {
         });
     }
 
+    function test_updatePressure_capsAccumulationWithinSameBlock() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+        _disableLiquidityFloor(poolId);
+
+        hook.updatePressureForTest(poolId, 20);
+        int56 firstPressure = hook.getDirectionalState(poolId).pressure;
+        assertEq(firstPressure, 20);
+
+        hook.updatePressureForTest(poolId, 50);
+        int56 secondPressure = hook.getDirectionalState(poolId).pressure;
+        assertEq(secondPressure, firstPressure, "pressure must not increase within the same block");
+
+        hook.updatePressureForTest(poolId, 0);
+        int56 thirdPressure = hook.getDirectionalState(poolId).pressure;
+        assertEq(thirdPressure, firstPressure, "pressure must not change at all within same block");
+    }
+
+    function test_updatePressure_resumesAccumulationOnNewBlock() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+        _disableLiquidityFloor(poolId);
+
+        hook.updatePressureForTest(poolId, 20);
+        hook.updatePressureForTest(poolId, 50);
+
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        hook.updatePressureForTest(poolId, 70);
+        int56 finalPressure = hook.getDirectionalState(poolId).pressure;
+        assertGt(finalPressure, 20, "pressure must accumulate again on new block");
+    }
+
+    function test_updatePressure_perBlockCapStopsSingleBlockMaxPressureAttack() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        poolManager.initialize(dynamicFeeKey, Constants.SQRT_PRICE_1_1);
+        _disableLiquidityFloor(poolId);
+
+        for (int24 t = 10; t <= 510; t += 10) {
+            hook.updatePressureForTest(poolId, t);
+        }
+        int56 finalPressure = hook.getDirectionalState(poolId).pressure;
+        assertLt(finalPressure, int56(500), "single-block stuffing must not reach maxPressure");
+    }
+
     function _disableLiquidityFloor(PoolId poolId) private {
         hook.setFeePolicy(poolId, 3000, 500, 10000, 500, 10, 500, 500_000, 30, 5 minutes, 0, 5);
     }

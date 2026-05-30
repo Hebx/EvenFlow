@@ -46,6 +46,7 @@ contract DirectionalToxicityShield is BaseHook {
         uint40 lastUpdateTime;
         uint24 lastFee;
         uint8 regime;
+        uint40 lastPressureBlock;
     }
 
     event PoolPolicyInitialized(PoolId indexed poolId, uint24 baseFee, uint24 minFee, uint24 maxFee);
@@ -94,7 +95,8 @@ contract DirectionalToxicityShield is BaseHook {
             pressure: 0,
             lastUpdateTime: uint40(block.timestamp),
             lastFee: policy.baseFee,
-            regime: 0
+            regime: 0,
+            lastPressureBlock: 0
         });
 
         emit PoolPolicyInitialized(poolId, policy.baseFee, policy.minFee, policy.maxFee);
@@ -207,6 +209,15 @@ contract DirectionalToxicityShield is BaseHook {
         FeePolicy memory policy = feePolicies[poolId];
         DirectionalState storage state = directionalStates[poolId];
 
+        // Per-block accumulation cap: only the first afterSwap per block accrues pressure.
+        // Subsequent same-block swaps still progress lastTick (so the next block sees the
+        // correct delta) but cannot re-add pressure, preventing single-block stuffing from
+        // blowing past maxPressure via a multi-swap sandwich.
+        if (uint40(block.number) == state.lastPressureBlock) {
+            state.lastTick = currentTick;
+            return;
+        }
+
         int24 tickMove = currentTick - state.referenceTick;
         int56 introducedPressure =
             _absTickMove(tickMove) < uint24(policy.majorMoveThreshold) ? int56(0) : int56(tickMove);
@@ -231,6 +242,7 @@ contract DirectionalToxicityShield is BaseHook {
         state.lastTick = currentTick;
         state.pressure = nextPressure;
         state.lastUpdateTime = nowTime;
+        state.lastPressureBlock = uint40(block.number);
         state.regime = newRegime;
 
         emit DirectionalPressureUpdated(poolId, tickMove, nextPressure, state.referenceTick);
