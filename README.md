@@ -2,12 +2,13 @@
 
 Directional Toxicity Shield is a prior-art-aware Uniswap v4 hook that applies a bounded directional dynamic LP fee. It tracks signed, decaying directional pressure per `PoolId`, raises fees when a swap continues harmful pressure, discounts counter-flow, and falls back to conservative behavior under low liquidity or quiet periods.
 
-This MVP is intentionally pure v4:
+The base product is intentionally lean v4:
 
-- no custody
 - no external oracle dependency
-- no return deltas
-- minimal hook permissions: `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap`
+- pricing is local, deterministic, and bounded per `PoolId`
+- hook permissions: `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap`
+
+It also ships an **opt-in** yield-smoothing layer (disabled by default). Pools that never call `configureSmoothing` keep the pure directional-fee behavior above with no custody and no return deltas. Pools that enable smoothing accept that the hook briefly holds the captured toxicity premium as ERC-6909 claims (`afterSwapReturnDelta`) between capture in toxic regimes and a rate-limited `donate()` drip back to in-range LPs in quiet regimes. This custody tradeoff is opt-in and documented in [docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md](docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md).
 
 The implementation is scaffolded from the Uniswap Foundation v4 template and keeps the original helper scripts/tests available while the production hook lives in [src/DirectionalToxicityShield.sol](src/DirectionalToxicityShield.sol).
 
