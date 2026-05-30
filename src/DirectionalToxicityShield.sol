@@ -36,6 +36,8 @@ contract DirectionalToxicityShield is BaseHook {
     error NotPoolConfigurer();
     error InvalidDripInterval();
     error InvalidDripBps();
+    error NotReactiveExecutor();
+    error InvalidPolicyMode();
 
     struct FeePolicy {
         uint24 baseFee;
@@ -85,6 +87,17 @@ contract DirectionalToxicityShield is BaseHook {
     event SmoothingConfigured(PoolId indexed poolId, bool enabled, uint32 dripBlockInterval, uint16 dripBps);
     event PremiumCaptured(PoolId indexed poolId, uint128 amount0, uint128 amount1);
     event DripReleased(PoolId indexed poolId, uint128 amount0, uint128 amount1);
+    event ReactiveExecutorSet(PoolId indexed poolId, address indexed executor);
+    event ReactiveActionApplied(PoolId indexed poolId, uint8 actionType, uint40 atBlock);
+    event ReactiveActionRejected(PoolId indexed poolId, uint8 actionType, uint8 reason);
+    event PolicyModeUpdated(PoolId indexed poolId, uint8 mode, address indexed caller);
+
+    /// @dev Reactive-automation action types (for events) and rejection reasons.
+    uint8 private constant ACTION_DRIP = 1;
+    uint8 private constant ACTION_POLICY_MODE = 2;
+    uint8 private constant REASON_NOT_QUIET = 1;
+    uint8 private constant REASON_NOT_ELIGIBLE = 2;
+    uint8 private constant REASON_BAD_MODE = 3;
 
     /// @dev Transient storage slot for the premium capture amount to pass from beforeSwap to afterSwap.
     /// keccak256(abi.encode(uint256(keccak256("DirectionalToxicityShield.premiumCapture")) - 1)) & ~bytes32(uint256(0xff))
@@ -98,6 +111,10 @@ contract DirectionalToxicityShield is BaseHook {
     mapping(PoolId poolId => address configurer) internal poolConfigurers;
     mapping(PoolId poolId => SmoothingConfig config) internal smoothingConfigs;
     mapping(PoolId poolId => SmoothingReserve reserve) internal smoothingReserves;
+    /// @dev Per-pool address authorized to trigger bounded Reactive-automation
+    /// actions (quiet drip, policy mode). Set by the pool configurer. Zero means
+    /// no Reactive executor is wired and the external automation entrypoints revert.
+    mapping(PoolId poolId => address executor) internal reactiveExecutors;
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
@@ -294,12 +311,38 @@ contract DirectionalToxicityShield is BaseHook {
         emit SmoothingConfigured(poolId, config.enabled, config.dripBlockInterval, config.dripBps);
     }
 
+    /// @notice Wire the per-pool Reactive executor authorized to trigger bounded
+    /// automation actions (quiet drip, policy mode). Restricted to the pool
+    /// configurer. Set to address(0) to disable Reactive automation for the pool.
+    function setReactiveExecutor(PoolKey calldata key, address executor) external {
+        PoolId poolId = key.toId();
+        if (msg.sender != poolConfigurers[poolId]) revert NotPoolConfigurer();
+        reactiveExecutors[poolId] = executor;
+        emit ReactiveExecutorSet(poolId, executor);
+    }
+
+    /// @notice The Reactive executor authorized for a pool (zero if unset).
+    function getReactiveExecutor(PoolId poolId) external view returns (address) {
+        return reactiveExecutors[poolId];
+    }
+
     function getDirectionalState(PoolId poolId) external view returns (DirectionalState memory) {
         return directionalStates[poolId];
     }
 
     function getCurrentRegime(PoolId poolId) external view returns (uint8) {
         return directionalStates[poolId].regime;
+    }
+
+    /// @notice The effective (time-decayed) risk regime as of the current block,
+    /// matching what {triggerQuietDrip} recomputes. Differs from
+    /// {getCurrentRegime} (the last stored regime) when pressure has decayed but
+    /// no swap has refreshed state since. Useful for Reactive monitors and
+    /// integrators deciding whether the pool is genuinely quiet.
+    function getEffectiveRegime(PoolId poolId) external view returns (uint8) {
+        FeePolicy memory policy = feePolicies[poolId];
+        DirectionalState memory state = directionalStates[poolId];
+        return _regimeFor(_effectivePressure(state, policy), policy.maxPressure);
     }
 
     function previewFee(PoolKey calldata key, SwapParams calldata params) external view returns (uint24) {
@@ -475,15 +518,33 @@ contract DirectionalToxicityShield is BaseHook {
     /// - at least dripBlockInterval blocks since last drip
     /// - pool has in-range liquidity (donate reverts otherwise)
     /// Note: regime check (quiet) is done by the caller before invoking this.
+    /// Runs inside the afterSwap PoolManager unlock context.
     function _tryDrip(PoolKey calldata key, PoolId poolId) internal {
+        if (!_dripReady(poolId)) return;
+        _performDrip(key, poolId);
+    }
+
+    /// @dev Shared eligibility gate: smoothing enabled, reserve non-empty, and
+    /// the per-pool cooldown elapsed. In-range liquidity and dust are only
+    /// knowable at donate time, so they are checked inside {_performDrip}.
+    function _dripReady(PoolId poolId) internal view returns (bool) {
         SmoothingConfig memory config = smoothingConfigs[poolId];
-        if (!config.enabled) return;
+        if (!config.enabled) return false;
 
         SmoothingReserve storage reserve = smoothingReserves[poolId];
-        if (reserve.reserve0 == 0 && reserve.reserve1 == 0) return;
+        if (reserve.reserve0 == 0 && reserve.reserve1 == 0) return false;
 
-        uint40 currentBlock = uint40(block.number);
-        if (currentBlock - reserve.lastDripBlock < config.dripBlockInterval) return;
+        if (uint40(block.number) - reserve.lastDripBlock < config.dripBlockInterval) return false;
+        return true;
+    }
+
+    /// @dev Execute a bounded drip. MUST run inside a PoolManager unlock context
+    /// (the afterSwap path is already unlocked; the Reactive path acquires an
+    /// unlock via {unlockCallback}). Safe no-op when there is no in-range
+    /// liquidity or the bounded slice rounds to dust.
+    function _performDrip(PoolKey memory key, PoolId poolId) internal {
+        SmoothingConfig memory config = smoothingConfigs[poolId];
+        SmoothingReserve storage reserve = smoothingReserves[poolId];
 
         // Guard: donate reverts with zero in-range liquidity
         if (poolManager.getLiquidity(poolId) == 0) return;
@@ -509,9 +570,84 @@ contract DirectionalToxicityShield is BaseHook {
         // Update reserve
         reserve.reserve0 -= drip0;
         reserve.reserve1 -= drip1;
-        reserve.lastDripBlock = currentBlock;
+        reserve.lastDripBlock = uint40(block.number);
 
         emit DripReleased(poolId, drip0, drip1);
+    }
+
+    // ─── Reactive automation entrypoints ───────────────────────────────────────
+
+    /// @notice Reactive-automation entrypoint: release a bounded slice of
+    /// escrowed premium to in-range LPs when the pool is in a quiet regime.
+    /// Solves the stranded-reserve problem: the in-swap drip only fires if a
+    /// swap happens during a quiet regime, so a genuinely idle pool would never
+    /// release escrow. A Reactive Smart Contract (CRON or RiskRegimeChanged)
+    /// calls this through the authorized executor.
+    ///
+    /// The hook RECOMPUTES quiet/eligibility from its own state; the callback is
+    /// only a trigger, never a source of truth. A failed/rejected action is a
+    /// bounded no-op and never affects the core fee path.
+    function triggerQuietDrip(PoolKey calldata key) external {
+        PoolId poolId = key.toId();
+        address executor = reactiveExecutors[poolId];
+        if (executor == address(0) || msg.sender != executor) revert NotReactiveExecutor();
+
+        // Recompute the quiet regime from current (time-decayed) pressure.
+        FeePolicy memory policy = feePolicies[poolId];
+        DirectionalState memory state = directionalStates[poolId];
+        int56 effectivePressure = _effectivePressure(state, policy);
+        if (_regimeFor(effectivePressure, policy.maxPressure) != 0) {
+            emit ReactiveActionRejected(poolId, ACTION_DRIP, REASON_NOT_QUIET);
+            return;
+        }
+
+        if (!_dripReady(poolId)) {
+            emit ReactiveActionRejected(poolId, ACTION_DRIP, REASON_NOT_ELIGIBLE);
+            return;
+        }
+
+        // Not in an unlock context here; acquire one and drip in unlockCallback.
+        poolManager.unlock(abi.encode(key));
+        emit ReactiveActionApplied(poolId, ACTION_DRIP, uint40(block.number));
+    }
+
+    /// @notice PoolManager unlock callback used only by {triggerQuietDrip}.
+    /// Strictly guarded to the PoolManager; performs the settle+donate body.
+    function unlockCallback(bytes calldata data) external onlyPoolManager returns (bytes memory) {
+        PoolKey memory key = abi.decode(data, (PoolKey));
+        _performDrip(key, key.toId());
+        return "";
+    }
+
+    /// @notice Reactive-automation entrypoint: switch the pool's fee policy among
+    /// a small set of pre-approved, bounded presets. Cannot set arbitrary fee
+    /// values. Only callable by the per-pool Reactive executor. All presets
+    /// preserve the {_validatePolicy} invariants.
+    function applyPolicyMode(PoolKey calldata key, uint8 mode) external {
+        PoolId poolId = key.toId();
+        address executor = reactiveExecutors[poolId];
+        if (executor == address(0) || msg.sender != executor) revert NotReactiveExecutor();
+        if (mode > 2) {
+            emit ReactiveActionRejected(poolId, ACTION_POLICY_MODE, REASON_BAD_MODE);
+            return;
+        }
+
+        (uint24 newMaxFee, uint24 newMaxFeeStep) = _policyModePreset(mode);
+        FeePolicy storage policy = feePolicies[poolId];
+        policy.maxFee = newMaxFee;
+        policy.maxFeeStep = newMaxFeeStep;
+        _validatePolicy(policy);
+
+        emit PolicyModeUpdated(poolId, mode, msg.sender);
+        emit ReactiveActionApplied(poolId, ACTION_POLICY_MODE, uint40(block.number));
+    }
+
+    /// @dev Bounded fee-policy presets selectable by Reactive automation.
+    /// mode 0 NORMAL, 1 GUARDED, 2 DEFENSIVE. Returns (maxFee, maxFeeStep).
+    function _policyModePreset(uint8 mode) private pure returns (uint24 maxFee, uint24 maxFeeStep) {
+        if (mode == 1) return (20_000, 1_000);
+        if (mode == 2) return (30_000, 2_000);
+        return (10_000, 500);
     }
 
     function _defaultPolicy() private pure returns (FeePolicy memory) {
