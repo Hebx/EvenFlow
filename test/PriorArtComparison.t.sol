@@ -63,7 +63,8 @@ contract PriorArtComparisonTest is BaseTest {
         // Deploy Shield
         address shieldAddr = _deployHookAt(
             "DirectionalToxicityShield",
-            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG,
+            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG,
             0x1111
         );
         shield = DirectionalToxicityShield(shieldAddr);

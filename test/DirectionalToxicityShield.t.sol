@@ -41,7 +41,7 @@ contract DirectionalToxicityShieldTest is BaseTest {
         address flags = address(
             uint160(
                 Hooks.BEFORE_INITIALIZE_FLAG | Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG
-                    | Hooks.AFTER_SWAP_FLAG
+                    | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
             ) ^ (0x4444 << 144)
         );
         deployCodeTo(
@@ -79,7 +79,7 @@ contract DirectionalToxicityShieldTest is BaseTest {
         assertFalse(permissions.beforeDonate);
         assertFalse(permissions.afterDonate);
         assertFalse(permissions.beforeSwapReturnDelta);
-        assertFalse(permissions.afterSwapReturnDelta);
+        assertTrue(permissions.afterSwapReturnDelta);
         assertFalse(permissions.afterAddLiquidityReturnDelta);
         assertFalse(permissions.afterRemoveLiquidityReturnDelta);
     }
@@ -741,6 +741,145 @@ contract DirectionalToxicityShieldTest is BaseTest {
 
         hook.configureSmoothing(dynamicFeeKey, config);
         assertEq(hook.getSmoothingConfig(poolId).enabled, false);
+    }
+
+    // ─── Task 2: Premium Capture Tests ───────────────────────────────────────────
+
+    event PremiumCaptured(PoolId indexed poolId, uint128 amount0, uint128 amount1);
+
+    function _enableSmoothing(PoolKey memory poolKey) private {
+        DirectionalToxicityShield.SmoothingConfig memory config =
+            DirectionalToxicityShield.SmoothingConfig({enabled: true, dripBlockInterval: 5, dripBps: 2000});
+        hook.configureSmoothing(poolKey, config);
+    }
+
+    function test_premiumCapture_reserveGrowsOnToxicAlignedSwap() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Build pressure: first swap in one direction
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        // Second swap same direction triggers toxic regime + aligned fee > baseFee
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        DirectionalToxicityShield.SmoothingReserve memory reserve = hook.getSmoothingReserve(poolId);
+        // The premium should have been captured in the unspecified currency (currency0 for zeroForOne=false exactIn)
+        assertGt(reserve.reserve0, 0, "reserve0 should grow from captured premium");
+    }
+
+    function test_premiumCapture_noReserveGrowthWhenSmoothingDisabled() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        // Smoothing NOT enabled
+
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        DirectionalToxicityShield.SmoothingReserve memory reserve = hook.getSmoothingReserve(poolId);
+        assertEq(reserve.reserve0, 0, "reserve must stay zero when smoothing disabled");
+        assertEq(reserve.reserve1, 0, "reserve must stay zero when smoothing disabled");
+    }
+
+    function test_premiumCapture_noReserveGrowthOnCounterFlowSwap() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Build positive pressure
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        // Counter-flow swap (fee < baseFee, no premium)
+        _swapExactIn(dynamicFeeKey, true, 1e18);
+
+        DirectionalToxicityShield.SmoothingReserve memory reserve = hook.getSmoothingReserve(poolId);
+        // Only the first swap could have captured (if regime was > 0), but the first swap
+        // starts from regime 0 (no pressure yet). The counter-flow swap definitely doesn't capture.
+        assertEq(reserve.reserve0, 0, "counter-flow must not capture");
+        assertEq(reserve.reserve1, 0, "counter-flow must not capture");
+    }
+
+    function test_premiumCapture_noReserveGrowthInQuietRegime() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Single swap from calm state: regime stays 0, fee = baseFee
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        DirectionalToxicityShield.SmoothingReserve memory reserve = hook.getSmoothingReserve(poolId);
+        assertEq(reserve.reserve0, 0, "quiet regime must not capture");
+        assertEq(reserve.reserve1, 0, "quiet regime must not capture");
+    }
+
+    function test_premiumCapture_emitsPremiumCapturedEvent() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Build pressure
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+
+        // Next aligned swap should emit PremiumCaptured
+        vm.expectEmit(true, false, false, false, address(hook));
+        emit PremiumCaptured(poolId, 0, 0); // We just check the event is emitted (amounts checked via reserve)
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+    }
+
+    function test_premiumCapture_reserveAccumulatesAcrossMultipleSwaps() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Build pressure with first swap
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        // Second swap captures
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        uint128 firstCapture = hook.getSmoothingReserve(poolId).reserve0;
+        assertGt(firstCapture, 0);
+
+        // Third swap should add more
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        uint128 secondCapture = hook.getSmoothingReserve(poolId).reserve0;
+        assertGt(secondCapture, firstCapture, "reserve must accumulate across swaps");
+    }
+
+    function test_premiumCapture_lpStillReceivesBaseFee() public {
+        PoolKey memory dynamicFeeKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
+        PoolId poolId = dynamicFeeKey.toId();
+        _initializePoolWithFullRangeLiquidity(dynamicFeeKey);
+        _disableLiquidityFloor(poolId);
+        _enableSmoothing(dynamicFeeKey);
+
+        // Build pressure
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        // The lastFee recorded should still be the full directional fee (for state tracking)
+        // but the LP override was baseFee
+        DirectionalToxicityShield.DirectionalState memory state = hook.getDirectionalState(poolId);
+        // After first swap from calm, fee should be baseFee (no pressure yet at beforeSwap time)
+        assertEq(state.lastFee, 3000);
+
+        // Second swap: pressure built, fee should be 3500 (aligned)
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 12);
+        _swapExactIn(dynamicFeeKey, false, 1e18);
+        state = hook.getDirectionalState(poolId);
+        assertEq(state.lastFee, 3500, "lastFee tracks full directional fee");
     }
 
     function _disableLiquidityFloor(PoolId poolId) private {

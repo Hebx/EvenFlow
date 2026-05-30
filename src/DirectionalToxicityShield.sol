@@ -2,20 +2,29 @@
 pragma solidity ^0.8.26;
 
 import {BaseHook} from "@openzeppelin/uniswap-hooks/src/base/BaseHook.sol";
+import {CurrencySettler} from "@openzeppelin/uniswap-hooks/src/utils/CurrencySettler.sol";
 
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
 import {IPoolManager, SwapParams} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
+import {TransientSlot} from "@openzeppelin/contracts/utils/TransientSlot.sol";
+import {SlotDerivation} from "@openzeppelin/contracts/utils/SlotDerivation.sol";
 
 contract DirectionalToxicityShield is BaseHook {
     using LPFeeLibrary for uint24;
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
+    using CurrencySettler for Currency;
+    using SafeCast for uint256;
+    using TransientSlot for *;
+    using SlotDerivation for *;
 
     error NotDynamicFee();
     error InvalidFeeBounds();
@@ -74,6 +83,13 @@ contract DirectionalToxicityShield is BaseHook {
     event DirectionalPressureUpdated(PoolId indexed poolId, int24 tickMove, int56 pressure, int24 referenceTick);
     event RiskRegimeChanged(PoolId indexed poolId, uint8 oldRegime, uint8 newRegime);
     event SmoothingConfigured(PoolId indexed poolId, bool enabled, uint32 dripBlockInterval, uint16 dripBps);
+    event PremiumCaptured(PoolId indexed poolId, uint128 amount0, uint128 amount1);
+
+    /// @dev Transient storage slot for the premium capture amount to pass from beforeSwap to afterSwap.
+    /// keccak256(abi.encode(uint256(keccak256("DirectionalToxicityShield.premiumCapture")) - 1)) & ~bytes32(uint256(0xff))
+    bytes32 private constant PREMIUM_CAPTURE_SLOT = 0x8a35acfbc15ff81a39ae7d344fd709f28e8600b4aa8c65c6b64bfe7fe36bd900;
+    uint256 private constant PREMIUM_BPS_OFFSET = 0;
+    uint256 private constant PREMIUM_APPLY_OFFSET = 1;
 
     mapping(PoolId poolId => FeePolicy policy) internal feePolicies;
     mapping(PoolId poolId => DirectionalState state) internal directionalStates;
@@ -96,7 +112,7 @@ contract DirectionalToxicityShield is BaseHook {
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: false,
-            afterSwapReturnDelta: false,
+            afterSwapReturnDelta: true,
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
         });
@@ -146,18 +162,36 @@ contract DirectionalToxicityShield is BaseHook {
         DirectionalState storage state = directionalStates[poolId];
         state.lastFee = fee;
 
-        emit FeeOverrideApplied(
-            poolId,
-            params.zeroForOne,
-            fee,
-            effectivePressure,
-            _regimeFor(effectivePressure, feePolicies[poolId].maxPressure)
-        );
+        FeePolicy memory policy = feePolicies[poolId];
+        uint8 regime = _regimeFor(effectivePressure, policy.maxPressure);
 
+        emit FeeOverrideApplied(poolId, params.zeroForOne, fee, effectivePressure, regime);
+
+        // Smoothing capture: when enabled and the swap is aligned (fee > baseFee),
+        // set the LP fee to baseFee only and store the premium fraction in transient
+        // storage for afterSwap to capture.
+        SmoothingConfig memory smoothing = smoothingConfigs[poolId];
+        if (smoothing.enabled && fee > policy.baseFee && regime > 0) {
+            // Premium fraction in bps: how much of the unspecified output to skim.
+            // premium = (fee - baseFee) / fee * 10_000 (in bps of the unspecified amount)
+            uint256 premiumBps = (uint256(fee - policy.baseFee) * 10_000) / uint256(fee);
+            _setTransientPremiumBps(premiumBps);
+            _setTransientApplyCapture(true);
+
+            // LPs receive baseFee; the premium is captured in afterSwap.
+            return (
+                BaseHook.beforeSwap.selector,
+                BeforeSwapDeltaLibrary.ZERO_DELTA,
+                policy.baseFee | LPFeeLibrary.OVERRIDE_FEE_FLAG
+            );
+        }
+
+        // No capture: clear transient state and pass full fee to LPs.
+        _setTransientApplyCapture(false);
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, fee | LPFeeLibrary.OVERRIDE_FEE_FLAG);
     }
 
-    function _afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta, bytes calldata)
+    function _afterSwap(address, PoolKey calldata key, SwapParams calldata params, BalanceDelta delta, bytes calldata)
         internal
         override
         returns (bytes4, int128)
@@ -166,7 +200,53 @@ contract DirectionalToxicityShield is BaseHook {
         (, int24 currentTick,,) = poolManager.getSlot0(poolId);
         _updatePressure(poolId, currentTick);
 
-        return (BaseHook.afterSwap.selector, 0);
+        // Premium capture: if beforeSwap flagged this swap for capture, skim the
+        // premium from the unspecified currency and escrow it in the reserve.
+        if (!_transientApplyCapture()) {
+            return (BaseHook.afterSwap.selector, 0);
+        }
+
+        // Reset transient state
+        uint256 premiumBps = _transientPremiumBps();
+        _setTransientApplyCapture(false);
+        _setTransientPremiumBps(0);
+
+        // Identify unspecified currency and its absolute amount (mirrors BaseDynamicAfterFee)
+        bool exactInput = params.amountSpecified < 0;
+        (Currency unspecified, int128 unspecifiedAmount) =
+            (exactInput == params.zeroForOne) ? (key.currency1, delta.amount1()) : (key.currency0, delta.amount0());
+
+        // For exactInput, unspecified is output (positive = tokens out to swapper).
+        // For exactOutput, unspecified is input (negative = tokens in from swapper).
+        uint256 absUnspecified;
+        if (unspecifiedAmount < 0) {
+            absUnspecified = uint256(uint128(-unspecifiedAmount));
+        } else {
+            absUnspecified = uint256(uint128(unspecifiedAmount));
+        }
+
+        // Compute premium to capture
+        uint256 feeAmount = (absUnspecified * premiumBps) / 10_000;
+        if (feeAmount == 0) return (BaseHook.afterSwap.selector, 0);
+
+        // Take ERC-6909 claims into this hook
+        unspecified.take(poolManager, address(this), feeAmount, true);
+
+        // Credit the smoothing reserve
+        SmoothingReserve storage reserve = smoothingReserves[poolId];
+        if (unspecified == key.currency0) {
+            reserve.reserve0 += uint128(feeAmount);
+        } else {
+            reserve.reserve1 += uint128(feeAmount);
+        }
+
+        emit PremiumCaptured(
+            poolId,
+            unspecified == key.currency0 ? uint128(feeAmount) : 0,
+            unspecified == key.currency1 ? uint128(feeAmount) : 0
+        );
+
+        return (BaseHook.afterSwap.selector, feeAmount.toInt128());
     }
 
     function getFeePolicy(PoolId poolId) external view returns (FeePolicy memory) {
@@ -344,6 +424,24 @@ contract DirectionalToxicityShield is BaseHook {
         if (!config.enabled) return;
         if (config.dripBlockInterval == 0) revert InvalidDripInterval();
         if (config.dripBps == 0 || config.dripBps > 10_000) revert InvalidDripBps();
+    }
+
+    // ─── Transient storage helpers (premium capture) ───────────────────────────
+
+    function _transientPremiumBps() internal view returns (uint256) {
+        return PREMIUM_CAPTURE_SLOT.offset(PREMIUM_BPS_OFFSET).asUint256().tload();
+    }
+
+    function _transientApplyCapture() internal view returns (bool) {
+        return PREMIUM_CAPTURE_SLOT.offset(PREMIUM_APPLY_OFFSET).asBoolean().tload();
+    }
+
+    function _setTransientPremiumBps(uint256 value) internal {
+        PREMIUM_CAPTURE_SLOT.offset(PREMIUM_BPS_OFFSET).asUint256().tstore(value);
+    }
+
+    function _setTransientApplyCapture(bool value) internal {
+        PREMIUM_CAPTURE_SLOT.offset(PREMIUM_APPLY_OFFSET).asBoolean().tstore(value);
     }
 
     function _defaultPolicy() private pure returns (FeePolicy memory) {
