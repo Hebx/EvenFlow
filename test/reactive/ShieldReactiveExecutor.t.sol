@@ -20,12 +20,11 @@ import {BaseTest} from "../utils/BaseTest.sol";
 import {ShieldReactiveExecutor} from "../../src/reactive/ShieldReactiveExecutor.sol";
 import {IDirectionalToxicityShield} from "../../src/reactive/IDirectionalToxicityShield.sol";
 import {IPayable} from "reactive-lib/interfaces/IPayable.sol";
-import {AbstractCallback} from "reactive-lib/base/AbstractCallback.sol";
 
 /// @dev Mock callback proxy: acts as the AbstractPayer service provider and as
-/// the address that delivers callbacks. In production the Reactive Signer posts
-/// through this proxy and injects the reactive-contract address as the first
-/// callback argument.
+/// the address that delivers callbacks (the executor requires msg.sender to be
+/// this proxy). In production the Reactive Signer posts through this proxy and
+/// injects the reactive-contract address as the first callback argument.
 contract MockCallbackProxy is IPayable {
     receive() external payable {}
 
@@ -40,8 +39,9 @@ contract MockCallbackProxy is IPayable {
 }
 
 /// @dev End-to-end (mocked transport) test: a Reactive callback releases stranded
-/// escrow to LPs with NO swap. Proves the executor authorization model and the
-/// full callback -> hook.triggerQuietDrip -> donate path.
+/// escrow to LPs with NO swap. Proves the executor's two-factor authorization
+/// (trusted proxy as msg.sender + registered controller as injected sender) and
+/// the full callback -> hook.triggerQuietDrip -> donate path.
 contract ShieldReactiveExecutorTest is BaseTest {
     using EasyPosm for IPositionManager;
     using PoolIdLibrary for PoolKey;
@@ -53,7 +53,7 @@ contract ShieldReactiveExecutorTest is BaseTest {
     MockCallbackProxy proxy;
     ShieldReactiveExecutor executor;
 
-    address private constant AUTHORIZED_REACTIVE = address(0xAACC);
+    address private constant CONTROLLER = address(0xAACC);
 
     function setUp() public {
         deployArtifactsAndLabel();
@@ -72,28 +72,74 @@ contract ShieldReactiveExecutorTest is BaseTest {
 
         proxy = new MockCallbackProxy();
         executor = new ShieldReactiveExecutor(
-            IPayable(payable(address(proxy))),
-            AUTHORIZED_REACTIVE,
-            IDirectionalToxicityShield(address(hook)),
-            address(this)
+            IPayable(payable(address(proxy))), IDirectionalToxicityShield(address(hook)), address(this)
         );
+        executor.setController(CONTROLLER);
     }
 
-    function test_executor_rejectsUnauthorizedSender() public {
-        (, PoolId poolId) = _wiredPool();
-        // Direct call with a wrong injected sender must revert.
-        vm.expectRevert(
-            abi.encodeWithSelector(AbstractCallback.CallbackNotAuthorized.selector, address(0xBAD), AUTHORIZED_REACTIVE)
+    // ── controller wiring ──
+
+    function test_setController_onlyOnceAndOnlyOwner() public {
+        // Fresh executor with controller unset.
+        ShieldReactiveExecutor fresh = new ShieldReactiveExecutor(
+            IPayable(payable(address(proxy))), IDirectionalToxicityShield(address(hook)), address(this)
         );
-        executor.onQuietDrip(address(0xBAD), poolId);
+        assertEq(fresh.controller(), address(0));
+
+        // Non-owner cannot set.
+        vm.prank(address(0xBAD));
+        vm.expectRevert(ShieldReactiveExecutor.NotOwner.selector);
+        fresh.setController(CONTROLLER);
+
+        // Owner sets once.
+        fresh.setController(CONTROLLER);
+        assertEq(fresh.controller(), CONTROLLER);
+
+        // Cannot set twice.
+        vm.expectRevert(ShieldReactiveExecutor.ControllerAlreadySet.selector);
+        fresh.setController(address(0x1234));
     }
 
-    function test_executor_rejectsUnregisteredPool() public {
+    function test_callbackRevertsWhenControllerUnset() public {
+        ShieldReactiveExecutor fresh = new ShieldReactiveExecutor(
+            IPayable(payable(address(proxy))), IDirectionalToxicityShield(address(hook)), address(this)
+        );
         PoolId fake = PoolId.wrap(bytes32(uint256(0xDEAD)));
-        vm.expectRevert(abi.encodeWithSelector(ShieldReactiveExecutor.PoolNotRegistered.selector, fake));
-        // Authorized sender, but pool never registered.
-        executor.onQuietDrip(AUTHORIZED_REACTIVE, fake);
+        bytes memory payload = abi.encodeWithSelector(ShieldReactiveExecutor.onQuietDrip.selector, CONTROLLER, fake);
+        // Delivered via proxy, but controller unset -> revert.
+        (bool ok, bytes memory ret) = proxy.deliver(address(fresh), payload);
+        assertFalse(ok, "must revert when controller unset");
+        assertEq(bytes4(ret), ShieldReactiveExecutor.ControllerUnset.selector);
     }
+
+    // ── authorization ──
+
+    function test_rejectsDirectCallNotThroughProxy() public {
+        (, PoolId poolId) = _wiredPool();
+        // Direct call: msg.sender is this test contract, not the proxy.
+        vm.expectRevert(abi.encodeWithSelector(ShieldReactiveExecutor.UntrustedProxy.selector, address(this)));
+        executor.onQuietDrip(CONTROLLER, poolId);
+    }
+
+    function test_rejectsWrongInjectedController() public {
+        (, PoolId poolId) = _wiredPool();
+        // Through the proxy, but the injected sender is not the registered controller.
+        bytes memory payload =
+            abi.encodeWithSelector(ShieldReactiveExecutor.onQuietDrip.selector, address(0xBAD), poolId);
+        (bool ok, bytes memory ret) = proxy.deliver(address(executor), payload);
+        assertFalse(ok, "must reject wrong injected controller");
+        assertEq(bytes4(ret), ShieldReactiveExecutor.UnauthorizedReactive.selector);
+    }
+
+    function test_rejectsUnregisteredPool() public {
+        PoolId fake = PoolId.wrap(bytes32(uint256(0xDEAD)));
+        bytes memory payload = abi.encodeWithSelector(ShieldReactiveExecutor.onQuietDrip.selector, CONTROLLER, fake);
+        (bool ok, bytes memory ret) = proxy.deliver(address(executor), payload);
+        assertFalse(ok, "must reject unregistered pool");
+        assertEq(bytes4(ret), ShieldReactiveExecutor.PoolNotRegistered.selector);
+    }
+
+    // ── end-to-end ──
 
     function test_endToEnd_callbackReleasesStrandedReserveNoSwap() public {
         (, PoolId poolId) = _wiredPool();
@@ -106,10 +152,9 @@ contract ShieldReactiveExecutorTest is BaseTest {
         uint128 reserveBefore = hook.getSmoothingReserve(poolId).reserve0;
         assertGt(reserveBefore, 0, "stranded reserve present");
 
-        // Reactive Signer delivers the callback through the proxy. The proxy
-        // injects the authorized reactive contract address as the first arg.
-        bytes memory payload =
-            abi.encodeWithSelector(ShieldReactiveExecutor.onQuietDrip.selector, AUTHORIZED_REACTIVE, poolId);
+        // Reactive Signer delivers the callback through the proxy, injecting the
+        // registered controller as the first argument.
+        bytes memory payload = abi.encodeWithSelector(ShieldReactiveExecutor.onQuietDrip.selector, CONTROLLER, poolId);
         (bool ok,) = proxy.deliver(address(executor), payload);
         assertTrue(ok, "callback delivery succeeded");
 

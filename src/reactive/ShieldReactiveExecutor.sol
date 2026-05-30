@@ -15,48 +15,64 @@ import {IDirectionalToxicityShield} from "./IDirectionalToxicityShield.sol";
 /// DirectionalToxicityShield hook on the same chain.
 ///
 /// Trust model (each link checked on-chain):
-///  1. Reactive Signer posts the callback through the chain's callback proxy.
-///     `AbstractCallback` makes the proxy the payment service provider.
+///  1. Reactive Signer posts the callback transaction through the chain's
+///     callback proxy. `AbstractPayer` records that proxy as `_SERVICE_PROVIDER`,
+///     and we require `msg.sender == _SERVICE_PROVIDER` on every callback. This
+///     is stronger than the bare `onlyCallbackSender` pattern, which checks only
+///     the injected first argument (a public value that could otherwise be
+///     spoofed by a direct caller).
 ///  2. The proxy injects the originating reactive contract address as the FIRST
-///     argument of each callback; `onlyCallbackSender` requires it to equal the
-///     authorized reactive contract (`_CALLBACK_SENDER`).
+///     argument of each callback; we require it to equal the registered
+///     `controller`.
 ///  3. This executor is the only address wired as the hook's reactive executor,
-///     so the hook itself gates the action.
-///  4. The hook RECOMPUTES all eligibility (quiet regime, cooldown, reserve);
-///     this executor never asserts pool state.
+///     so the hook itself gates the action and re-validates ALL eligibility
+///     (quiet regime, cooldown, reserve). This executor never asserts pool state.
 ///
-/// PoolKeys are registered by the deployer because callbacks carry only the
-/// indexed PoolId and an action selector, not the full key.
+/// Deploy ordering: the executor and the Lasna controller have a mutual address
+/// dependency. We break it with a set-once `controller`: deploy the executor
+/// first (controller unset), deploy the controller on Lasna pointing at this
+/// executor, then call {setController} once to lock the wiring. While unset, no
+/// callback can pass authorization.
+///
+/// PoolKeys are registered by the owner because callbacks carry only the indexed
+/// PoolId and an action selector, not the full key.
 contract ShieldReactiveExecutor is AbstractCallback {
     using PoolIdLibrary for PoolKey;
 
     /// @notice The hook this executor drives.
     IDirectionalToxicityShield public immutable shield;
 
-    /// @notice Deployer authorized to register pool keys.
+    /// @notice Deployer authorized to register pools and set the controller.
     address public immutable owner;
+
+    /// @notice The authorized Lasna reactive contract (set once, post-deploy).
+    address public controller;
 
     /// @notice Registered pool keys by PoolId (set by owner).
     mapping(PoolId => PoolKey) private _poolKeys;
     mapping(PoolId => bool) public registered;
 
     error NotOwner();
+    error ControllerAlreadySet();
+    error ControllerUnset();
+    error ControllerZero();
+    error UntrustedProxy(address caller);
+    error UnauthorizedReactive(address sender, address expected);
     error PoolNotRegistered(PoolId poolId);
 
+    event ControllerSet(address indexed controller);
     event PoolRegistered(PoolId indexed poolId);
     event DripCallbackReceived(PoolId indexed poolId);
     event PolicyModeCallbackReceived(PoolId indexed poolId, uint8 mode);
 
     /// @param callbackProxy_ Chain callback proxy address (payment service provider).
-    /// @param authorizedReactive_ Reactive contract allowed to trigger callbacks.
     /// @param shield_ The DirectionalToxicityShield hook to drive.
-    /// @param owner_ Deployer allowed to register pool keys.
-    constructor(
-        IPayable callbackProxy_,
-        address authorizedReactive_,
-        IDirectionalToxicityShield shield_,
-        address owner_
-    ) AbstractCallback(callbackProxy_, authorizedReactive_) {
+    /// @param owner_ Deployer allowed to register pools / set controller.
+    /// @dev The AbstractCallback `callbackSender_` is left as address(0); this
+    /// contract does its own (stricter) authorization via {_authCallback}.
+    constructor(IPayable callbackProxy_, IDirectionalToxicityShield shield_, address owner_)
+        AbstractCallback(callbackProxy_, address(0))
+    {
         shield = shield_;
         owner = owner_;
     }
@@ -64,6 +80,14 @@ contract ShieldReactiveExecutor is AbstractCallback {
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
         _;
+    }
+
+    /// @notice Lock in the authorized Lasna controller. Callable once by owner.
+    function setController(address controller_) external onlyOwner {
+        if (controller != address(0)) revert ControllerAlreadySet();
+        if (controller_ == address(0)) revert ControllerZero();
+        controller = controller_;
+        emit ControllerSet(controller_);
     }
 
     /// @notice Register the full PoolKey for a pool so callbacks can address it.
@@ -82,7 +106,8 @@ contract ShieldReactiveExecutor is AbstractCallback {
     /// @param sender Injected reactive-contract address (authenticated).
     /// @param poolId Target pool.
     /// @dev The hook re-validates quiet/eligibility; a no-op there is harmless.
-    function onQuietDrip(address sender, PoolId poolId) external onlyCallbackSender(sender) {
+    function onQuietDrip(address sender, PoolId poolId) external {
+        _authCallback(sender);
         if (!registered[poolId]) revert PoolNotRegistered(poolId);
         emit DripCallbackReceived(poolId);
         shield.triggerQuietDrip(_poolKeys[poolId]);
@@ -92,9 +117,20 @@ contract ShieldReactiveExecutor is AbstractCallback {
     /// @param sender Injected reactive-contract address (authenticated).
     /// @param poolId Target pool.
     /// @param mode Preset index (hook clamps/validates).
-    function onPolicyMode(address sender, PoolId poolId, uint8 mode) external onlyCallbackSender(sender) {
+    function onPolicyMode(address sender, PoolId poolId, uint8 mode) external {
+        _authCallback(sender);
         if (!registered[poolId]) revert PoolNotRegistered(poolId);
         emit PolicyModeCallbackReceived(poolId, mode);
         shield.applyPolicyMode(_poolKeys[poolId], mode);
+    }
+
+    /// @dev Two-factor callback auth: the transaction must come through the
+    /// trusted callback proxy AND carry the registered controller as the injected
+    /// first argument.
+    function _authCallback(address sender) private view {
+        if (msg.sender != address(_SERVICE_PROVIDER)) revert UntrustedProxy(msg.sender);
+        address c = controller;
+        if (c == address(0)) revert ControllerUnset();
+        if (sender != c) revert UnauthorizedReactive(sender, c);
     }
 }

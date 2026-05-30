@@ -12,25 +12,27 @@ import {IReactive} from "reactive-lib/interfaces/IReactive.sol";
 /// the DirectionalToxicityShield smoothing layer.
 ///
 /// It solves the stranded-reserve problem: the in-swap drip only fires if a swap
-/// happens during a quiet regime, so a genuinely idle pool would never release
-/// its escrowed premium. This controller gives the pool a decentralized clock:
-///  - subscribes to the hook's `RiskRegimeChanged` (to react the moment a pool
-///    goes quiet), and
-///  - subscribes to the Reactive CRON event (~12 min) to sweep idle pools that
-///    emit no events at all.
+/// happens during a quiet regime, so a genuinely idle pool (no swaps at all)
+/// would never release its escrowed premium even though time decay has made it
+/// quiet. This controller gives the pool a decentralized clock:
+///  - subscribes to the hook's `RiskRegimeChanged` (fast reaction when a swap
+///    flips a pool to quiet), and
+///  - subscribes to the Reactive CRON event to sweep idle pools that emit no
+///    events at all (the actually-stranded case).
 /// On either trigger it requests a callback to the destination executor, which
 /// forwards `triggerQuietDrip`. The hook re-validates everything; a callback for
 /// a pool that is not actually eligible is a cheap no-op.
+///
+/// @dev The CRON topic0 and CRON system-contract address are constructor
+/// parameters, not hardcoded magic numbers: the cron cadence/topic is a network
+/// parameter that should be supplied from the live Reactive deployment at deploy
+/// time (see docs/product/reactive-lp-shield-execution-plan.md). The hook's
+/// RiskRegimeChanged topic0 is fixed and derived from the event signature.
 contract ShieldReactiveController is AbstractReactive {
     /// @notice topic0 of DirectionalToxicityShield.RiskRegimeChanged(bytes32,uint8,uint8).
-    uint256 private constant RISK_REGIME_CHANGED_TOPIC0 =
+    /// Verified: cast keccak "RiskRegimeChanged(bytes32,uint8,uint8)".
+    uint256 public constant RISK_REGIME_CHANGED_TOPIC0 =
         0xb8a947857cc396ba992936587c4bfebf37908e930241b80287b6f5a612963ed8;
-
-    /// @notice Reactive CRON topic0 for ~12-minute cadence (Cron100, every 100 blocks).
-    uint256 private constant CRON100_TOPIC0 = 0xb49937fb8970e19fd46d48f7e3fb00d659deac0347f79cd7cb542f0fc1503c70;
-
-    /// @notice Legacy system contract that emits Cron events.
-    address private constant CRON_SYSTEM = 0x0000000000000000000000000000000000fffFfF;
 
     /// @notice Quiet regime value emitted by the hook (regime 0 = calm/quiet).
     uint256 private constant REGIME_QUIET = 0;
@@ -52,6 +54,12 @@ contract ShieldReactiveController is AbstractReactive {
     /// @notice Target pool (the demo pool). Stored so CRON sweeps can address it.
     PoolId public immutable targetPool;
 
+    /// @notice CRON system-contract address that emits cron events (network param).
+    address public immutable cronSystem;
+
+    /// @notice topic0 of the subscribed CRON event (network param; cadence-specific).
+    uint256 public immutable cronTopic0;
+
     event QuietDripRequested(bytes32 indexed poolId, uint256 reason);
 
     /// @dev reason codes for the emitted request event.
@@ -63,18 +71,24 @@ contract ShieldReactiveController is AbstractReactive {
     /// @param destinationChainId_ Chain id of the executor (destination).
     /// @param executor_ Destination executor address.
     /// @param targetPool_ PoolId to sweep on CRON.
+    /// @param cronSystem_ CRON system-contract address (origin == Reactive chain).
+    /// @param cronTopic0_ topic0 of the CRON cadence to subscribe to.
     constructor(
         uint256 originChainId_,
         address shieldHook_,
         uint256 destinationChainId_,
         address executor_,
-        PoolId targetPool_
+        PoolId targetPool_,
+        address cronSystem_,
+        uint256 cronTopic0_
     ) payable {
         originChainId = originChainId_;
         shieldHook = shieldHook_;
         destinationChainId = destinationChainId_;
         executor = executor_;
         targetPool = targetPool_;
+        cronSystem = cronSystem_;
+        cronTopic0 = cronTopic0_;
 
         // Subscribe to the hook's RiskRegimeChanged on the origin chain.
         // poolId is topic1 (indexed); leave it wildcard to cover the pool.
@@ -82,9 +96,9 @@ contract ShieldReactiveController is AbstractReactive {
             originChainId_, shieldHook_, RISK_REGIME_CHANGED_TOPIC0, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE
         );
 
-        // Subscribe to CRON (~12 min) for idle-pool sweeps. CRON is emitted on
-        // the Reactive Network itself (block.chainid here).
-        SYSTEM.subscribe(block.chainid, CRON_SYSTEM, CRON100_TOPIC0, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        // Subscribe to CRON for idle-pool sweeps. CRON is emitted on the Reactive
+        // Network itself (block.chainid here), by the cron system contract.
+        SYSTEM.subscribe(block.chainid, cronSystem_, cronTopic0_, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
     /// @inheritdoc IReactive
@@ -96,7 +110,7 @@ contract ShieldReactiveController is AbstractReactive {
             if (newRegime == REGIME_QUIET) {
                 _requestDrip(PoolId.wrap(bytes32(log_.topic1)), REASON_REGIME_QUIET);
             }
-        } else if (log_.topic0 == CRON100_TOPIC0) {
+        } else if (log_.topic0 == cronTopic0 && log_.contractAddress == cronSystem) {
             // Periodic sweep of the configured target pool. The hook re-checks
             // eligibility, so an ineligible pool is a cheap no-op.
             _requestDrip(targetPool, REASON_CRON);

@@ -15,7 +15,9 @@ import {MockReactiveSystem} from "./mocks/MockReactiveSystem.sol";
 contract ShieldReactiveControllerTest is Test {
     uint256 private constant RISK_REGIME_CHANGED_TOPIC0 =
         0xb8a947857cc396ba992936587c4bfebf37908e930241b80287b6f5a612963ed8;
-    uint256 private constant CRON100_TOPIC0 = 0xb49937fb8970e19fd46d48f7e3fb00d659deac0347f79cd7cb542f0fc1503c70;
+    // Representative CRON values supplied at deploy time (network params). The
+    // real cadence/topic comes from the live Reactive deployment, not hardcoded.
+    uint256 private constant CRON_TOPIC0 = 0xb49937fb8970e19fd46d48f7e3fb00d659deac0347f79cd7cb542f0fc1503c70;
 
     address private constant SYSTEM_ADDR = 0x8888888888888888888888888888888888888888;
     address private constant CRON_SYSTEM = 0x0000000000000000000000000000000000fffFfF;
@@ -36,7 +38,9 @@ contract ShieldReactiveControllerTest is Test {
         system = MockReactiveSystem(payable(SYSTEM_ADDR));
 
         targetPool = PoolId.wrap(bytes32(uint256(0xABCD)));
-        controller = new ShieldReactiveController(ORIGIN_CHAIN, HOOK, DEST_CHAIN, EXECUTOR, targetPool);
+        controller = new ShieldReactiveController(
+            ORIGIN_CHAIN, HOOK, DEST_CHAIN, EXECUTOR, targetPool, CRON_SYSTEM, CRON_TOPIC0
+        );
     }
 
     function test_constructor_subscribesToRegimeAndCron() public view {
@@ -49,7 +53,7 @@ contract ShieldReactiveControllerTest is Test {
 
         MockReactiveSystem.Subscription memory s1 = system.getSubscription(1);
         assertEq(s1.contractAddress, CRON_SYSTEM);
-        assertEq(s1.topic0, CRON100_TOPIC0);
+        assertEq(s1.topic0, CRON_TOPIC0);
     }
 
     function test_react_quietRegimeRequestsDripCallback() public {
@@ -84,7 +88,7 @@ contract ShieldReactiveControllerTest is Test {
 
     function test_react_cronSweepsTargetPool() public {
         IReactive.LogRecord memory log;
-        log.topic0 = CRON100_TOPIC0;
+        log.topic0 = CRON_TOPIC0;
         log.contractAddress = CRON_SYSTEM;
 
         vm.prank(SYSTEM_ADDR);
