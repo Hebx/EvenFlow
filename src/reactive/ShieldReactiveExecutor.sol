@@ -4,8 +4,7 @@ pragma solidity ^0.8.26;
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 
-import {AbstractCallback} from "reactive-lib/base/AbstractCallback.sol";
-import {IPayable} from "reactive-lib/interfaces/IPayable.sol";
+import {AbstractCallback} from "reactive-lib-classic/abstract-base/AbstractCallback.sol";
 
 import {IDirectionalToxicityShield} from "./IDirectionalToxicityShield.sol";
 
@@ -15,12 +14,10 @@ import {IDirectionalToxicityShield} from "./IDirectionalToxicityShield.sol";
 /// DirectionalToxicityShield hook on the same chain.
 ///
 /// Trust model (each link checked on-chain):
-///  1. Reactive Signer posts the callback transaction through the chain's
-///     callback proxy. `AbstractPayer` records that proxy as `_SERVICE_PROVIDER`,
-///     and we require `msg.sender == _SERVICE_PROVIDER` on every callback. This
-///     is stronger than the bare `onlyCallbackSender` pattern, which checks only
-///     the injected first argument (a public value that could otherwise be
-///     spoofed by a direct caller).
+///  1. The Reactive Signer posts the callback transaction through the chain's
+///     callback proxy. The classic `AbstractCallback` constructor records the
+///     proxy as the `vendor` and adds it to the authorized-sender ACL, so
+///     `msg.sender == proxy` is enforced via `authorizedSenderOnly`.
 ///  2. The proxy injects the originating reactive contract address as the FIRST
 ///     argument of each callback; we require it to equal the registered
 ///     `controller`.
@@ -65,13 +62,12 @@ contract ShieldReactiveExecutor is AbstractCallback {
     event DripCallbackReceived(PoolId indexed poolId);
     event PolicyModeCallbackReceived(PoolId indexed poolId, uint8 mode);
 
-    /// @param callbackProxy_ Chain callback proxy address (payment service provider).
+    /// @param callbackProxy_ Chain callback proxy address (e.g. 0xa6eA…A5a6 on Base Sepolia).
     /// @param shield_ The DirectionalToxicityShield hook to drive.
     /// @param owner_ Deployer allowed to register pools / set controller.
-    /// @dev The AbstractCallback `callbackSender_` is left as address(0); this
-    /// contract does its own (stricter) authorization via {_authCallback}.
-    constructor(IPayable callbackProxy_, IDirectionalToxicityShield shield_, address owner_)
-        AbstractCallback(callbackProxy_, address(0))
+    constructor(address callbackProxy_, IDirectionalToxicityShield shield_, address owner_)
+        AbstractCallback(callbackProxy_)
+        payable
     {
         shield = shield_;
         owner = owner_;
@@ -124,13 +120,21 @@ contract ShieldReactiveExecutor is AbstractCallback {
         shield.applyPolicyMode(_poolKeys[poolId], mode);
     }
 
-    /// @dev Two-factor callback auth: the transaction must come through the
-    /// trusted callback proxy AND carry the registered controller as the injected
-    /// first argument.
+    /// @dev Two-factor callback auth:
+    ///  1. msg.sender must be the callback proxy (enforced by classic
+    ///     AbstractCallback's `authorizedSenderOnly` pattern — the proxy is the
+    ///     only address in the `senders` ACL).
+    ///  2. The injected first argument (`sender`) must equal the registered
+    ///     controller.
     function _authCallback(address sender) private view {
-        if (msg.sender != address(_SERVICE_PROVIDER)) revert UntrustedProxy(msg.sender);
+        // Classic AbstractCallback adds the proxy to `senders` in its ctor.
+        // We check msg.sender here explicitly for a clear revert message.
+        if (!senders[msg.sender]) revert UntrustedProxy(msg.sender);
         address c = controller;
         if (c == address(0)) revert ControllerUnset();
         if (sender != c) revert UnauthorizedReactive(sender, c);
     }
+
+    /// @notice Allow the executor to receive ETH (for callback gas funding).
+    receive() external payable override {}
 }

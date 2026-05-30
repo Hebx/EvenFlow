@@ -72,7 +72,7 @@ contract ShieldReactiveExecutorTest is BaseTest {
 
         proxy = new MockCallbackProxy();
         executor = new ShieldReactiveExecutor(
-            IPayable(payable(address(proxy))), IDirectionalToxicityShield(address(hook)), address(this)
+            address(proxy), IDirectionalToxicityShield(address(hook)), address(this)
         );
         executor.setController(CONTROLLER);
     }
@@ -82,7 +82,7 @@ contract ShieldReactiveExecutorTest is BaseTest {
     function test_setController_onlyOnceAndOnlyOwner() public {
         // Fresh executor with controller unset.
         ShieldReactiveExecutor fresh = new ShieldReactiveExecutor(
-            IPayable(payable(address(proxy))), IDirectionalToxicityShield(address(hook)), address(this)
+            address(proxy), IDirectionalToxicityShield(address(hook)), address(this)
         );
         assertEq(fresh.controller(), address(0));
 
@@ -102,7 +102,7 @@ contract ShieldReactiveExecutorTest is BaseTest {
 
     function test_callbackRevertsWhenControllerUnset() public {
         ShieldReactiveExecutor fresh = new ShieldReactiveExecutor(
-            IPayable(payable(address(proxy))), IDirectionalToxicityShield(address(hook)), address(this)
+            address(proxy), IDirectionalToxicityShield(address(hook)), address(this)
         );
         PoolId fake = PoolId.wrap(bytes32(uint256(0xDEAD)));
         bytes memory payload = abi.encodeWithSelector(ShieldReactiveExecutor.onQuietDrip.selector, CONTROLLER, fake);

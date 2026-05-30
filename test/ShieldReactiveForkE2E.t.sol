@@ -58,7 +58,7 @@ contract ShieldReactiveForkE2ETest is BaseTest {
         (currency0, currency1) = deployCurrencyPair();
         hook = _deployHook();
         executor = new ShieldReactiveExecutor(
-            IPayable(payable(BASE_SEPOLIA_CALLBACK_PROXY)), IDirectionalToxicityShield(address(hook)), address(this)
+            BASE_SEPOLIA_CALLBACK_PROXY, IDirectionalToxicityShield(address(hook)), address(this)
         );
         executor.setController(CONTROLLER);
     }

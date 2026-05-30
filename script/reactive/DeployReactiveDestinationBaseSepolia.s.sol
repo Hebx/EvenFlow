@@ -23,7 +23,7 @@ import {IUniswapV4Router04} from "hookmate/interfaces/router/IUniswapV4Router04.
 import {DirectionalToxicityShield} from "../../src/DirectionalToxicityShield.sol";
 import {ShieldReactiveExecutor} from "../../src/reactive/ShieldReactiveExecutor.sol";
 import {IDirectionalToxicityShield} from "../../src/reactive/IDirectionalToxicityShield.sol";
-import {IPayable} from "reactive-lib/interfaces/IPayable.sol";
+
 
 import {TestnetScenarioMockERC20} from "../testnet/TestnetDirectionalScenario.sol";
 
@@ -50,7 +50,7 @@ contract DeployReactiveDestinationBaseSepolia is Script {
 
     uint256 private constant BASE_SEPOLIA_CHAIN_ID = 84532;
     uint160 private constant SQRT_PRICE_1_1 = 79228162514264337593543950336;
-    IPayable private constant CALLBACK_PROXY = IPayable(payable(0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6));
+    address private constant CALLBACK_PROXY = 0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6;
 
     function run() external {
         require(block.chainid == BASE_SEPOLIA_CHAIN_ID, "wrong chain: expected Base Sepolia 84532");
@@ -91,7 +91,11 @@ contract DeployReactiveDestinationBaseSepolia is Script {
         });
 
         _approve(tokenA, tokenB, permit2, positionManager, poolManager, swapRouter);
-        positionManager.initializePool(key, SQRT_PRICE_1_1);
+        // Initialize directly via the PoolManager so the hook records the
+        // DEPLOYER as the pool configurer (not the PositionManager). The hook's
+        // _afterInitialize captures msg.sender as the configurer, which gates
+        // configureSmoothing / setReactiveExecutor below.
+        poolManager.initialize(key, SQRT_PRICE_1_1);
         _addLiquidity(positionManager, key, deployer);
 
         // 3. Enable smoothing so escrow accrues on toxic flow.
