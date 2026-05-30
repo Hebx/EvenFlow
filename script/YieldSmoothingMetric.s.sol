@@ -89,6 +89,22 @@ contract YieldSmoothingMetric is Script {
         return _compute(_choppy(), _defaultPolicy(), SmoothingConfig({dripBps: 2500}));
     }
 
+    // ── Scenario step accessors ───────────────────────────────────────────────
+    // Exposed so the IL/LVR proof layer derives its price path from the EXACT
+    // same step sequence the variance metric uses (single source of truth).
+
+    function stepsBurstThenQuiet() public pure returns (Step[] memory) {
+        return _burstThenQuiet();
+    }
+
+    function stepsSustainedToxic() public pure returns (Step[] memory) {
+        return _sustainedToxic();
+    }
+
+    function stepsChoppy() public pure returns (Step[] memory) {
+        return _choppy();
+    }
+
     // ── Core model ───────────────────────────────────────────────────────────
 
     function _compute(Step[] memory steps, FeePolicy memory policy, SmoothingConfig memory smoothing)
