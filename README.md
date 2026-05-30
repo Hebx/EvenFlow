@@ -1,16 +1,66 @@
 # Directional Toxicity Shield
 
-Directional Toxicity Shield is a prior-art-aware Uniswap v4 hook that applies a bounded directional dynamic LP fee. It tracks signed, decaying directional pressure per `PoolId`, raises fees when a swap continues harmful pressure, discounts counter-flow, and falls back to conservative behavior under low liquidity or quiet periods.
+Directional Toxicity Shield is a Uniswap v4 hook that prices swap toxicity **by direction**. It tracks signed, decaying directional pressure per `PoolId`, raises the LP fee when flow keeps pushing price the same way, discounts the counter-flow that rebalances the pool, and decays back to baseline when activity goes quiet. Unlike a static fee tier, it can tell a sustained toxic run from healthy two-sided volume — without an oracle.
+
+```
+  fee
+   ^
+3500|        ____ sustained toxic flow (escalate, bounded)
+   |       /
+3000|---- /------------------ base ---------\________ decays back when quiet
+   |    /                                   
+2500|  *  <- counter-flow swap (discount below base; rewards rebalancers)
+   +------------------------------------------------> swaps over time
+```
 
 The base product is intentionally lean v4:
 
 - no external oracle dependency
 - pricing is local, deterministic, and bounded per `PoolId`
-- hook permissions: `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap`
+- hook permissions: `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap` (+ `afterSwapReturnDelta` only when smoothing is enabled)
 
 It also ships an **opt-in** yield-smoothing layer (disabled by default). Pools that never call `configureSmoothing` keep the pure directional-fee behavior above with no custody and no return deltas. Pools that enable smoothing accept that the hook briefly holds the captured toxicity premium as ERC-6909 claims (`afterSwapReturnDelta`) between capture in toxic regimes and a rate-limited `donate()` drip back to in-range LPs in quiet regimes. This custody tradeoff is opt-in and documented in [docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md](docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md).
 
-The implementation is scaffolded from the Uniswap Foundation v4 template and keeps the original helper scripts/tests available while the production hook lives in [src/DirectionalToxicityShield.sol](src/DirectionalToxicityShield.sol).
+The production hook lives in [src/DirectionalToxicityShield.sol](src/DirectionalToxicityShield.sol). Positioning and go-to-market notes are in [docs/POSITIONING.md](docs/POSITIONING.md).
+
+> **Status:** unaudited. The comparisons below are reproducible model/same-flow benchmarks plus a live-infrastructure fork test against the real canonical v4 `PoolManager`. They demonstrate mechanics and behavioral differences, not realized LP PnL from live capital. Do not present them as production yield numbers.
+
+## How it compares
+
+| Approach | Reacts to direction? | Discounts counter-flow? | Decays when quiet? | Oracle-free? |
+|---|:--:|:--:|:--:|:--:|
+| Static fee tier (e.g. live Clanker static-fee hook) | per-direction only, fixed | no | no | yes |
+| Volatility / size dynamic fee | no | no | n/a | usually |
+| Nezlobin-style skew (JDS / Regis / InfHook) | yes | partial / no | often no | varies |
+| **Directional Toxicity Shield** | **yes (signed pressure)** | **yes** | **yes** | **yes** |
+
+Side-by-side fee behavior on identical swap flow, from [test/PriorArtComparison.t.sol](test/PriorArtComparison.t.sol) and [test/DirectionalToxicityShieldMainnetComparison.t.sol](test/DirectionalToxicityShieldMainnetComparison.t.sol):
+
+- **Counter-flow:** Shield discounts to 2500 while JDS/InfHook/VPIN stay flat at 3000 (Regis trims only to ~2559) — the Shield actively rewards rebalancing flow.
+- **Toxic-then-quiet:** Shield decays back to 3000; JDS spikes to 6000 and InfHook to 4767 on the next swap because they retain or over-correct without proper decay.
+- **Vs a live production static hook:** against the real Clanker static-fee hook on a Base mainnet fork, the static fee stays fixed across toxic, counter-flow, and quiet phases while the Shield escalates, discounts, and decays.
+
+## Public API
+
+Beyond the v4 hook callbacks, the hook exposes:
+
+```solidity
+// Per-pool fee policy (bounds, decay, pressure scaling) — view
+function getFeePolicy(PoolId poolId) external view returns (FeePolicy memory);
+
+// Current signed directional pressure + last applied fee — view
+function getDirectionalState(PoolId poolId) external view returns (DirectionalState memory);
+
+// Preview the fee a given swap would pay, without mutating state — view
+function previewFee(PoolKey calldata key, SwapParams calldata params) external view returns (uint24);
+
+// Opt in to the yield-smoothing layer for a pool (configurer-gated)
+function configureSmoothing(PoolKey calldata key, SmoothingConfig calldata config) external;
+function getSmoothingConfig(PoolId poolId) external view returns (SmoothingConfig memory);
+function getSmoothingReserve(PoolId poolId) external view returns (SmoothingReserve memory);
+```
+
+`SmoothingConfig` is `{ bool enabled; uint32 dripBlockInterval; uint16 dripBps }`. Smoothing is off until `configureSmoothing` is called with `enabled = true`.
 
 ### Verify
 
@@ -79,6 +129,21 @@ Base Sepolia USDC is optional for the MVP proof. Use the mock-token scenario fir
 
 The latest Base Sepolia mock-token run is recorded in [deployments/base-sepolia-stage3-2026-05-30-smoothing.md](deployments/base-sepolia-stage3-2026-05-30-smoothing.md) (opt-in yield-smoothing + optimizer/via-IR enabled; supersedes the `-2026-05-30.md` hardening redeploy and the original `-2026-05-25.md` run).
 
+### Stage 4: Live-Production Comparison
+
+Stage 4 deploys the Shield against the **real** canonical Base mainnet v4 `PoolManager` and proves a live production hook (Clanker static-fee, `0xDd5EeaFf7BD481AD55Db083062b13a3cdf0A68CC`) is co-located on that same `PoolManager`, then contrasts adaptive-vs-static fee behavior on identical swap flow.
+
+```bash
+# Behavioral contrast runs locally (CI-safe); live-hook assertion is skipped off-fork:
+forge test --match-contract DirectionalToxicityShieldMainnetComparisonTest -vv
+
+# Full proof against real Base mainnet infrastructure:
+forge test --match-contract DirectionalToxicityShieldMainnetComparisonTest \
+  --fork-url "$BASE_MAINNET_RPC_URL" -vv
+```
+
+Against the Base mainnet fork this confirms the live Clanker hook (12,558 bytes of deployed code) shares the canonical `PoolManager` (`0x498581fF718922c3f8e6A244956aF099B2652b2b`) that the freshly mined Shield deploys against — so the comparison is against real production infrastructure, not a mock. The static hook holds a fixed fee through toxic, counter-flow, and quiet phases while the Shield escalates (3000→3500), discounts counter-flow (2500), and decays back to base (3000).
+
 ### Simulation
 
 ```bash
@@ -124,6 +189,17 @@ forge script script/00_DeployHook.s.sol:DeployHookScript \
 ```
 
 The deploy script mines a hook address for the MVP permission bits and deploys `DirectionalToxicityShield` with the configured v4 `PoolManager`.
+
+### Security Posture
+
+- **Unaudited.** No third-party audit has been performed. Do not deploy with real capital without an independent review.
+- **No oracle / no admin price input.** Fees are derived only from local pool state (tick movement, elapsed time, liquidity), so there is no external price feed to manipulate or trust.
+- **Bounded by construction.** Every fee is clamped to `[minFee, maxFee]` with a per-update `maxFeeStep`; directional pressure is clamped to `maxPressure`. A single swap cannot move the fee arbitrarily.
+- **Custody is opt-in.** With smoothing disabled (the default) the hook takes no return delta and never holds funds. Only `configureSmoothing(enabled: true)` lets the hook hold captured premium as ERC-6909 claims before dripping it back via `donate()`. `configureSmoothing` is access-controlled to the pool configurer.
+- **Determinism.** Behavior is reproducible from on-chain state; the same flow produces the same fees, which is why the comparison tests are deterministic.
+- **Reentrancy / accounting.** All settlement goes through the canonical v4 `PoolManager` lock; the hook holds no external balances when smoothing is off.
+
+Report security concerns privately rather than opening a public issue until a disclosure process is in place.
 
 ### Requirements
 
