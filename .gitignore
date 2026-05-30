@@ -8,8 +8,12 @@ out/
 /broadcast/*/5/
 /broadcast/**/dry-run/
 
-# Docs
-docs/
+# Docs (internal working docs stay local; prod-referenced docs tracked explicitly)
+docs/*
+!docs/POSITIONING.md
+!docs/plans/
+docs/plans/*
+!docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md
 
 # Dotenv file
 .env
