@@ -151,6 +151,8 @@ forge test --match-contract DirectionalToxicityShieldLiveDemoTest \
   --fork-url "$BASE_MAINNET_RPC_URL" -vv
 ```
 
+For an end-to-end **live testnet** run — real chain, real PoolManager, real broadcast txs, real wall-clock decay window — see [docs/demos/base-sepolia-live-fee-timeline.md](docs/demos/base-sepolia-live-fee-timeline.md). Each row in that artifact links a BaseScan tx the explorer can verify, and the captured fee path is `3000 → 3500 (toxic, capped) → 2500 (counter, floored) → 3000 (decayed back to base after >5 min quiet)`. Reproduce with [script/testnet/TestnetTimelineDemo.s.sol](script/testnet/TestnetTimelineDemo.s.sol).
+
 ### Simulation
 
 ```bash
