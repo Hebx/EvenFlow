@@ -18,6 +18,12 @@ contract DirectionalToxicityShield is BaseHook {
     using StateLibrary for IPoolManager;
 
     error NotDynamicFee();
+    error InvalidFeeBounds();
+    error InvalidStepSize();
+    error InvalidPressureScale();
+    error InvalidDecayFactor();
+    error InvalidDecayWindow();
+    error InvalidMajorMoveThreshold();
 
     struct FeePolicy {
         uint24 baseFee;
@@ -79,6 +85,7 @@ contract DirectionalToxicityShield is BaseHook {
     function _afterInitialize(address, PoolKey calldata key, uint160, int24 tick) internal override returns (bytes4) {
         PoolId poolId = key.toId();
         FeePolicy memory policy = _defaultPolicy();
+        _validatePolicy(policy);
 
         feePolicies[poolId] = policy;
         directionalStates[poolId] = DirectionalState({
@@ -246,6 +253,19 @@ contract DirectionalToxicityShield is BaseHook {
 
     function _absTickMove(int24 tickMove) private pure returns (uint24) {
         return tickMove < 0 ? uint24(-tickMove) : uint24(tickMove);
+    }
+
+    function _validatePolicy(FeePolicy memory policy) internal pure {
+        if (policy.minFee > policy.baseFee || policy.baseFee > policy.maxFee) {
+            revert InvalidFeeBounds();
+        }
+        if (policy.maxFeeStep == 0) revert InvalidStepSize();
+        if (policy.pressureScale == 0 || policy.maxPressure <= 0) {
+            revert InvalidPressureScale();
+        }
+        if (policy.decayFactor > 1_000_000) revert InvalidDecayFactor();
+        if (policy.decayWindow <= policy.filterWindow) revert InvalidDecayWindow();
+        if (policy.majorMoveThreshold < 0) revert InvalidMajorMoveThreshold();
     }
 
     function _defaultPolicy() private pure returns (FeePolicy memory) {

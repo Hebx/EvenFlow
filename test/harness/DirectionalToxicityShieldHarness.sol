@@ -17,6 +17,10 @@ contract DirectionalToxicityShieldHarness is DirectionalToxicityShield {
         _updatePressure(poolId, currentTick);
     }
 
+    function validatePolicy(FeePolicy memory policy) external pure {
+        _validatePolicy(policy);
+    }
+
     function setFeePolicy(
         PoolId poolId,
         uint24 baseFee,

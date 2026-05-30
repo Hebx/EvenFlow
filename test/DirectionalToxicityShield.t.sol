@@ -515,6 +515,85 @@ contract DirectionalToxicityShieldTest is BaseTest {
         assertLe(state.pressure, 500);
     }
 
+    function test_validatePolicy_revertsWhenBaseFeeBelowMin() public {
+        DirectionalToxicityShield.FeePolicy memory p = _validPolicy();
+        p.baseFee = 100;
+        p.minFee = 200;
+        vm.expectRevert(DirectionalToxicityShield.InvalidFeeBounds.selector);
+        hook.validatePolicy(p);
+    }
+
+    function test_validatePolicy_revertsWhenBaseFeeAboveMax() public {
+        DirectionalToxicityShield.FeePolicy memory p = _validPolicy();
+        p.baseFee = 20000;
+        p.maxFee = 10000;
+        vm.expectRevert(DirectionalToxicityShield.InvalidFeeBounds.selector);
+        hook.validatePolicy(p);
+    }
+
+    function test_validatePolicy_revertsWhenMaxFeeStepZero() public {
+        DirectionalToxicityShield.FeePolicy memory p = _validPolicy();
+        p.maxFeeStep = 0;
+        vm.expectRevert(DirectionalToxicityShield.InvalidStepSize.selector);
+        hook.validatePolicy(p);
+    }
+
+    function test_validatePolicy_revertsWhenPressureScaleZero() public {
+        DirectionalToxicityShield.FeePolicy memory p = _validPolicy();
+        p.pressureScale = 0;
+        vm.expectRevert(DirectionalToxicityShield.InvalidPressureScale.selector);
+        hook.validatePolicy(p);
+    }
+
+    function test_validatePolicy_revertsWhenMaxPressureZero() public {
+        DirectionalToxicityShield.FeePolicy memory p = _validPolicy();
+        p.maxPressure = 0;
+        vm.expectRevert(DirectionalToxicityShield.InvalidPressureScale.selector);
+        hook.validatePolicy(p);
+    }
+
+    function test_validatePolicy_revertsWhenDecayFactorTooLarge() public {
+        DirectionalToxicityShield.FeePolicy memory p = _validPolicy();
+        p.decayFactor = 1_000_001;
+        vm.expectRevert(DirectionalToxicityShield.InvalidDecayFactor.selector);
+        hook.validatePolicy(p);
+    }
+
+    function test_validatePolicy_revertsWhenDecayWindowNotAfterFilterWindow() public {
+        DirectionalToxicityShield.FeePolicy memory p = _validPolicy();
+        p.filterWindow = 60;
+        p.decayWindow = 60;
+        vm.expectRevert(DirectionalToxicityShield.InvalidDecayWindow.selector);
+        hook.validatePolicy(p);
+    }
+
+    function test_validatePolicy_revertsWhenMajorMoveThresholdNegative() public {
+        DirectionalToxicityShield.FeePolicy memory p = _validPolicy();
+        p.majorMoveThreshold = -1;
+        vm.expectRevert(DirectionalToxicityShield.InvalidMajorMoveThreshold.selector);
+        hook.validatePolicy(p);
+    }
+
+    function test_validatePolicy_acceptsDefaultPolicy() public view {
+        hook.validatePolicy(_validPolicy());
+    }
+
+    function _validPolicy() private pure returns (DirectionalToxicityShield.FeePolicy memory) {
+        return DirectionalToxicityShield.FeePolicy({
+            baseFee: 3000,
+            minFee: 500,
+            maxFee: 10000,
+            maxFeeStep: 500,
+            pressureScale: 10,
+            maxPressure: 500,
+            decayFactor: 500_000,
+            filterWindow: 30,
+            decayWindow: 5 minutes,
+            liquidityFloor: 1e18,
+            majorMoveThreshold: 5
+        });
+    }
+
     function _disableLiquidityFloor(PoolId poolId) private {
         hook.setFeePolicy(poolId, 3000, 500, 10000, 500, 10, 500, 500_000, 30, 5 minutes, 0, 5);
     }
