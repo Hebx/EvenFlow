@@ -1033,10 +1033,18 @@ contract DirectionalToxicityShieldTest is BaseTest {
 
         uint128 reserveStart = hook.getSmoothingReserve(poolId).reserve0;
 
+        // Drive block/time from explicit accumulators. Under via-ir + optimizer, NUMBER/TIMESTAMP
+        // are CSE'd within this frame (they are per-tx invariants in the EVM), so re-reading
+        // block.number/block.timestamp after vm.roll/vm.warp returns stale cached values and the
+        // loop would not advance cumulatively. Seeding locals once and incrementing avoids that.
+        uint256 bn = block.number;
+        uint256 ts = block.timestamp;
         // Multiple drip cycles in quiet regime
         for (uint256 i = 0; i < 5; i++) {
-            vm.roll(block.number + 6);
-            vm.warp(block.timestamp + 5 minutes);
+            bn += 6;
+            ts += 5 minutes;
+            vm.roll(bn);
+            vm.warp(ts);
             _swapExactIn(dynamicFeeKey, true, 0.1e18);
         }
 
@@ -1055,6 +1063,10 @@ contract DirectionalToxicityShieldTest is BaseTest {
     }
 
     function _swapExactIn(PoolKey memory poolKey, bool zeroForOne, uint256 amountIn) private {
+        // NOTE: fixed far-future deadline (not block.timestamp-derived). Under via-ir + optimizer,
+        // the TIMESTAMP opcode is CSE'd within this single test frame (block.timestamp is invariant
+        // per-tx in the EVM), so a `block.timestamp + 1` deadline goes stale across vm.warp() calls
+        // and trips DeadlinePassed. Real swaps are separate txs, so production is unaffected.
         swapRouter.swapExactTokensForTokens({
             amountIn: amountIn,
             amountOutMin: 0,
@@ -1062,7 +1074,7 @@ contract DirectionalToxicityShieldTest is BaseTest {
             poolKey: poolKey,
             hookData: Constants.ZERO_BYTES,
             receiver: address(this),
-            deadline: block.timestamp + 1
+            deadline: type(uint256).max
         });
     }
 
