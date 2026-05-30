@@ -62,7 +62,7 @@ forge script script/testnet/UnichainSepoliaScenario.s.sol:UnichainSepoliaScenari
   --rpc-url "$UNICHAIN_SEPOLIA_RPC_URL"
 ```
 
-The first successful Unichain Sepolia run is recorded in [deployments/unichain-sepolia-stage3-2026-05-25.md](deployments/unichain-sepolia-stage3-2026-05-25.md).
+The latest Unichain Sepolia run is recorded in [deployments/unichain-sepolia-stage3-2026-05-30-smoothing.md](deployments/unichain-sepolia-stage3-2026-05-30-smoothing.md) (opt-in yield-smoothing + optimizer/via-IR enabled; supersedes the `-2026-05-30.md` hardening redeploy and the original `-2026-05-25.md` run).
 
 Stage 3 Base Sepolia scenario uses the same mock-token flow against canonical v4 deployments:
 
@@ -77,7 +77,7 @@ forge script script/testnet/BaseSepoliaScenario.s.sol:BaseSepoliaScenario \
 
 Base Sepolia USDC is optional for the MVP proof. Use the mock-token scenario first to verify hook mechanics, then add a USDC-paired demo only after confirming the current testnet USDC address and the deployer balance.
 
-The first successful Base Sepolia mock-token run is recorded in [deployments/base-sepolia-stage3-2026-05-25.md](deployments/base-sepolia-stage3-2026-05-25.md).
+The latest Base Sepolia mock-token run is recorded in [deployments/base-sepolia-stage3-2026-05-30-smoothing.md](deployments/base-sepolia-stage3-2026-05-30-smoothing.md) (opt-in yield-smoothing + optimizer/via-IR enabled; supersedes the `-2026-05-30.md` hardening redeploy and the original `-2026-05-25.md` run).
 
 ### Simulation
 
