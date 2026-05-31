@@ -56,8 +56,6 @@ contract DeployReactiveControllerLasna is Script {
         console2.logBytes32(targetPoolId);
         console2.log("cronSystem", cronSystem);
         console2.log("fundedWei", funding);
-        console2.log(
-            "NEXT: call executor.setController(controller) on the destination chain to lock the wiring."
-        );
+        console2.log("NEXT: call executor.setController(controller) on the destination chain to lock the wiring.");
     }
 }

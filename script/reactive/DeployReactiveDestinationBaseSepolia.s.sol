@@ -24,7 +24,6 @@ import {DirectionalToxicityShield} from "../../src/DirectionalToxicityShield.sol
 import {ShieldReactiveExecutor} from "../../src/reactive/ShieldReactiveExecutor.sol";
 import {IDirectionalToxicityShield} from "../../src/reactive/IDirectionalToxicityShield.sol";
 
-
 import {TestnetScenarioMockERC20} from "../testnet/TestnetDirectionalScenario.sol";
 
 /// @notice Phase 3, destination side (Base Sepolia, chain 84532).

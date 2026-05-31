@@ -31,9 +31,7 @@ contract LegacyCronProbe is AbstractReactive {
         cronTopic0 = cronTopic0_;
         // Subscribe only on the Reactive Network side (system contract present).
         if (!vm) {
-            service.subscribe(
-                block.chainid, CRON_SYS, cronTopic0_, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE
-            );
+            service.subscribe(block.chainid, CRON_SYS, cronTopic0_, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
         }
     }
 

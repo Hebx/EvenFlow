@@ -27,9 +27,7 @@ contract LegacyCallbackProbe is AbstractReactive {
         destChainId = destChainId_;
         sink = sink_;
         if (!vm) {
-            service.subscribe(
-                block.chainid, CRON_SYS, cronTopic0_, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE
-            );
+            service.subscribe(block.chainid, CRON_SYS, cronTopic0_, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
         }
     }
 

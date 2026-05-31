@@ -74,9 +74,7 @@ contract LiquidityPenaltyHeadToHeadTest is BaseTest {
             ) ^ (0x5555 << 144)
         );
         deployCodeTo(
-            "LiquidityPenaltyHook.sol:LiquidityPenaltyHook",
-            abi.encode(poolManager, LPH_BLOCK_OFFSET),
-            lphFlags
+            "LiquidityPenaltyHook.sol:LiquidityPenaltyHook", abi.encode(poolManager, LPH_BLOCK_OFFSET), lphFlags
         );
         lphHook = LiquidityPenaltyHook(lphFlags);
     }
@@ -107,8 +105,7 @@ contract LiquidityPenaltyHeadToHeadTest is BaseTest {
     /// captures premium and drips it back to in-range LPs; LPH redistributes
     /// nothing (no add/remove fires its triggers).
     function test_swapFlow_shieldRedistributes_lphIsInert() public {
-        PoolKey memory shieldKey =
-            PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(shieldHook));
+        PoolKey memory shieldKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(shieldHook));
         PoolId shieldPid = shieldKey.toId();
         _initPool(shieldKey);
         _disableLiquidityFloor(shieldPid);
@@ -148,8 +145,7 @@ contract LiquidityPenaltyHeadToHeadTest is BaseTest {
         // shield's behavior on a calm pool. Smoothing-off path on shield is the
         // worst case for "shield does nothing"; smoothing-on would also do
         // nothing because regime never lifts.
-        PoolKey memory shieldKey =
-            PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(shieldHook));
+        PoolKey memory shieldKey = PoolKey(currency0, currency1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(shieldHook));
         PoolId shieldPid = shieldKey.toId();
         _initPool(shieldKey);
         _disableLiquidityFloor(shieldPid);

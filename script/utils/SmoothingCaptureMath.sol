@@ -37,11 +37,7 @@ library SmoothingCaptureMath {
     ///        (the v4 `Swap` event's amount for that currency).
     /// @param fee The applied directional fee (from `FeeOverrideApplied`).
     /// @param baseFee The pool's base fee.
-    function capturedAmount(uint256 absUnspecified, uint24 fee, uint24 baseFee)
-        internal
-        pure
-        returns (uint256)
-    {
+    function capturedAmount(uint256 absUnspecified, uint24 fee, uint24 baseFee) internal pure returns (uint256) {
         uint256 premiumBps = capturePremiumBps(fee, baseFee);
         if (premiumBps == 0) return 0;
         return (absUnspecified * premiumBps) / BPS;

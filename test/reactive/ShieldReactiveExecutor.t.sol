@@ -71,9 +71,7 @@ contract ShieldReactiveExecutorTest is BaseTest {
         hook = DirectionalToxicityShieldHarness(flags);
 
         proxy = new MockCallbackProxy();
-        executor = new ShieldReactiveExecutor(
-            address(proxy), IDirectionalToxicityShield(address(hook)), address(this)
-        );
+        executor = new ShieldReactiveExecutor(address(proxy), IDirectionalToxicityShield(address(hook)), address(this));
         executor.setController(CONTROLLER);
     }
 
@@ -81,9 +79,8 @@ contract ShieldReactiveExecutorTest is BaseTest {
 
     function test_setController_onlyOnceAndOnlyOwner() public {
         // Fresh executor with controller unset.
-        ShieldReactiveExecutor fresh = new ShieldReactiveExecutor(
-            address(proxy), IDirectionalToxicityShield(address(hook)), address(this)
-        );
+        ShieldReactiveExecutor fresh =
+            new ShieldReactiveExecutor(address(proxy), IDirectionalToxicityShield(address(hook)), address(this));
         assertEq(fresh.controller(), address(0));
 
         // Non-owner cannot set.
@@ -101,9 +98,8 @@ contract ShieldReactiveExecutorTest is BaseTest {
     }
 
     function test_callbackRevertsWhenControllerUnset() public {
-        ShieldReactiveExecutor fresh = new ShieldReactiveExecutor(
-            address(proxy), IDirectionalToxicityShield(address(hook)), address(this)
-        );
+        ShieldReactiveExecutor fresh =
+            new ShieldReactiveExecutor(address(proxy), IDirectionalToxicityShield(address(hook)), address(this));
         PoolId fake = PoolId.wrap(bytes32(uint256(0xDEAD)));
         bytes memory payload = abi.encodeWithSelector(ShieldReactiveExecutor.onQuietDrip.selector, CONTROLLER, fake);
         // Delivered via proxy, but controller unset -> revert.

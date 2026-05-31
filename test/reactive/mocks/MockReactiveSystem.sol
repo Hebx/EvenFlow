@@ -30,14 +30,7 @@ contract MockReactiveSystem is ISystemContract {
 
     // ── ISubscriptionService ──
 
-    function subscribe(
-        uint256 chainId_,
-        address contract_,
-        uint256 t0,
-        uint256 t1,
-        uint256 t2,
-        uint256 t3
-    ) external {
+    function subscribe(uint256 chainId_, address contract_, uint256 t0, uint256 t1, uint256 t2, uint256 t3) external {
         subscriptions.push(Subscription(chainId_, contract_, t0, t1, t2, t3));
     }
 

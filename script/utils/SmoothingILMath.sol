@@ -34,11 +34,7 @@ library SmoothingILMath {
     /// @param priceInitWad Initial price `P0` in WAD.
     /// @return ilFractionWad_ Signed WAD fraction. `0` at `P1==P0`, more
     ///         negative as `|log(k_ratio)|` grows. Bounded in `[-WAD, 0]`.
-    function ilFractionWad(uint256 priceNowWad, uint256 priceInitWad)
-        internal
-        pure
-        returns (int256 ilFractionWad_)
-    {
+    function ilFractionWad(uint256 priceNowWad, uint256 priceInitWad) internal pure returns (int256 ilFractionWad_) {
         require(priceInitWad > 0, "P0=0");
         require(priceNowWad > 0, "P1=0");
 
@@ -97,11 +93,7 @@ library SmoothingILMath {
     /// @param yPrev token1 reserve before the move (raw units).
     /// @param priceNewWad New mid price in WAD.
     /// @return lvr Per-step LVR in token1 raw units (≥ 0).
-    function lvrStep(uint256 xPrev, uint256 yPrev, uint256 priceNewWad)
-        internal
-        pure
-        returns (uint256 lvr)
-    {
+    function lvrStep(uint256 xPrev, uint256 yPrev, uint256 priceNewWad) internal pure returns (uint256 lvr) {
         // V_no_arb = y_prev + x_prev * P_new / WAD   (token1 raw)
         uint256 vNoArb = yPrev + FullMath.mulDiv(xPrev, priceNewWad, WAD);
 
@@ -122,11 +114,7 @@ library SmoothingILMath {
     /// @param k Invariant `x·y` (raw·raw units; caller's responsibility to
     ///        avoid overflow at extreme deposits).
     /// @param priceWad Mid price in WAD.
-    function reservesAt(uint256 k, uint256 priceWad)
-        internal
-        pure
-        returns (uint256 x, uint256 y)
-    {
+    function reservesAt(uint256 k, uint256 priceWad) internal pure returns (uint256 x, uint256 y) {
         require(priceWad > 0, "P=0");
         // x = sqrt(k * WAD / P)   (raw token0)
         uint256 kOverP_wad = FullMath.mulDiv(k, WAD, priceWad);

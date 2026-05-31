@@ -32,8 +32,7 @@ contract ShieldReactiveControllerTest is Test {
     address private constant EXECUTOR = address(0xE9EC);
 
     /// @dev topic0 of the inherited Callback(uint256 indexed, address indexed, uint64 indexed, bytes)
-    bytes32 private constant CALLBACK_EVENT_TOPIC0 =
-        keccak256("Callback(uint256,address,uint64,bytes)");
+    bytes32 private constant CALLBACK_EVENT_TOPIC0 = keccak256("Callback(uint256,address,uint64,bytes)");
 
     MockReactiveSystem system;
     PoolId targetPool;
@@ -49,9 +48,8 @@ contract ShieldReactiveControllerTest is Test {
     /// @dev Deploy the controller WITH the system contract present (vm=false,
     /// Reactive Network context). Subscriptions are created in the constructor.
     function _deployRnController() private returns (ShieldReactiveController) {
-        return new ShieldReactiveController(
-            ORIGIN_CHAIN, HOOK, DEST_CHAIN, EXECUTOR, targetPool, CRON_SYSTEM, CRON_TOPIC0
-        );
+        return
+            new ShieldReactiveController(ORIGIN_CHAIN, HOOK, DEST_CHAIN, EXECUTOR, targetPool, CRON_SYSTEM, CRON_TOPIC0);
     }
 
     /// @dev Deploy the controller WITHOUT the system contract present (vm=true,

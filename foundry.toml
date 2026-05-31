@@ -11,6 +11,6 @@ solc_version = "0.8.30"
 src = "src"
 via_ir = true
 
-[profile.lint]
+[lint]
 exclude_lints = ["screaming-snake-case-immutable", "screaming-snake-case-const"]
 lint_on_build = false

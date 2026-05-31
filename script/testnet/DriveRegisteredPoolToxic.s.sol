@@ -27,8 +27,7 @@ contract DriveRegisteredPoolToxic is Script {
         address t0 = vm.envAddress("REG_POOL_TOKEN0");
         address t1 = vm.envAddress("REG_POOL_TOKEN1");
 
-        IUniswapV4Router04 router =
-            IUniswapV4Router04(payable(AddressConstants.getV4SwapRouterAddress(block.chainid)));
+        IUniswapV4Router04 router = IUniswapV4Router04(payable(AddressConstants.getV4SwapRouterAddress(block.chainid)));
         DirectionalToxicityShield hook = DirectionalToxicityShield(hookAddr);
 
         PoolKey memory key = PoolKey({

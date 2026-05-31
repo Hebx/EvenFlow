@@ -20,7 +20,7 @@ contract CallbackSink is AbstractCallback {
 
     event Pinged(address indexed sender, uint256 count, uint256 blk);
 
-    constructor(address callbackProxy_) AbstractCallback(callbackProxy_) payable {}
+    constructor(address callbackProxy_) payable AbstractCallback(callbackProxy_) {}
 
     /// @notice Callback target. First arg is the proxy-injected reactive address.
     /// No authorization on purpose: this is a delivery-path litmus test.

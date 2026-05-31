@@ -66,8 +66,8 @@ contract ShieldReactiveExecutor is AbstractCallback {
     /// @param shield_ The DirectionalToxicityShield hook to drive.
     /// @param owner_ Deployer allowed to register pools / set controller.
     constructor(address callbackProxy_, IDirectionalToxicityShield shield_, address owner_)
-        AbstractCallback(callbackProxy_)
         payable
+        AbstractCallback(callbackProxy_)
     {
         shield = shield_;
         owner = owner_;

@@ -34,8 +34,7 @@ contract SmoothingCaptureMathTest is BaseTest {
     using PoolIdLibrary for PoolKey;
 
     // Event topics for log parsing.
-    bytes32 private constant FEE_OVERRIDE_TOPIC0 =
-        keccak256("FeeOverrideApplied(bytes32,bool,uint24,int56,uint8)");
+    bytes32 private constant FEE_OVERRIDE_TOPIC0 = keccak256("FeeOverrideApplied(bytes32,bool,uint24,int56,uint8)");
     bytes32 private constant SWAP_TOPIC0 =
         keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)");
 
@@ -167,15 +166,10 @@ contract SmoothingCaptureMathTest is BaseTest {
 
     // ─── Log parsing helpers ───────────────────────────────────────────────────
 
-    function _findFeeOverride(Vm.Log[] memory logs, PoolId poolId)
-        private
-        pure
-        returns (uint24 fee, bool found)
-    {
+    function _findFeeOverride(Vm.Log[] memory logs, PoolId poolId) private pure returns (uint24 fee, bool found) {
         bytes32 wantId = PoolId.unwrap(poolId);
         for (uint256 i = 0; i < logs.length; i++) {
-            if (logs[i].topics.length >= 2 && logs[i].topics[0] == FEE_OVERRIDE_TOPIC0 && logs[i].topics[1] == wantId)
-            {
+            if (logs[i].topics.length >= 2 && logs[i].topics[0] == FEE_OVERRIDE_TOPIC0 && logs[i].topics[1] == wantId) {
                 (, uint24 f,,) = abi.decode(logs[i].data, (bool, uint24, int56, uint8));
                 return (f, true);
             }
@@ -230,7 +224,15 @@ contract SmoothingCaptureMathTest is BaseTest {
             liquidityAmount
         );
         positionManager.mint(
-            key, tickLower, tickUpper, liquidityAmount, a0 + 1, a1 + 1, address(this), block.timestamp, Constants.ZERO_BYTES
+            key,
+            tickLower,
+            tickUpper,
+            liquidityAmount,
+            a0 + 1,
+            a1 + 1,
+            address(this),
+            block.timestamp,
+            Constants.ZERO_BYTES
         );
     }
 }
