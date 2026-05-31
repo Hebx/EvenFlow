@@ -160,6 +160,8 @@ forge test --match-contract DirectionalToxicityShieldSmoothingLiveDemoTest \
   --fork-url "$BASE_MAINNET_RPC_URL" -vv
 ```
 
+The smoothing **capture** leg is also proven **end-to-end on live Base Sepolia**: [docs/demos/base-sepolia-live-smoothing-capture.md](docs/demos/base-sepolia-live-smoothing-capture.md) captures 6 real broadcast swaps that escrow premium into the deployed hook, with the per-swap `PremiumCaptured` amounts summing to the live on-chain `reserve1` to the wei. The matching drip release on testnet is staged for the (on-hold) Reactive relay or any organic quiet-regime swap; the drip mechanism itself is proven on the mainnet fork above.
+
 ### Simulation
 
 ```bash
