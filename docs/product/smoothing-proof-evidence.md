@@ -212,6 +212,14 @@ at the bytecode level.
 The LPH redistribution math itself is upstream-tested in the vendored
 library; we don't re-test it here.
 
+**Real-infra:** OZ's `LiquidityPenaltyHook` has no canonical live deployment
+(it's a library, deployed per-pool), so the real-infra bar is running the
+comparison against the **real canonical Base mainnet `PoolManager`** that
+production hooks use. The head-to-head extends `BaseTest`, which resolves that
+PoolManager via `AddressConstants` on a fork — so all three Phase 4 tests pass
+unchanged against real Base mainnet infra (`--fork-url $BASE_MAINNET_RPC_URL`),
+not just a local PoolManager.
+
 ---
 
 ## 7. Honest caveats
@@ -249,6 +257,10 @@ forge test --match-path test/utils/SmoothingProofReport.t.sol -vv
 
 # Head-to-head with LiquidityPenaltyHook (Phase 4)
 forge test --match-path test/utils/LiquidityPenaltyHeadToHead.t.sol -vv
+
+# Same head-to-head against the REAL Base mainnet PoolManager (real-infra)
+forge test --match-contract LiquidityPenaltyHeadToHeadTest \
+  --fork-url "$BASE_MAINNET_RPC_URL" -vv
 
 # Print the scoreboard
 forge script script/SmoothingProofReport.s.sol:SmoothingProofReport
