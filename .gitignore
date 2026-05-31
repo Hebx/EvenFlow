@@ -15,6 +15,9 @@ docs/*
 !docs/demos/
 docs/plans/*
 !docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md
+!docs/product/
+docs/product/*
+!docs/product/smoothing-proof-evidence.md
 
 # Dotenv file
 .env

@@ -19,7 +19,7 @@ The base product is intentionally lean v4:
 - pricing is local, deterministic, and bounded per `PoolId`
 - hook permissions: `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap` (+ `afterSwapReturnDelta` only when smoothing is enabled)
 
-It also ships an **opt-in** yield-smoothing layer (disabled by default). Pools that never call `configureSmoothing` keep the pure directional-fee behavior above with no custody and no return deltas. Pools that enable smoothing accept that the hook briefly holds the captured toxicity premium as ERC-6909 claims (`afterSwapReturnDelta`) between capture in toxic regimes and a rate-limited `donate()` drip back to in-range LPs in quiet regimes. This custody tradeoff is opt-in and documented in [docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md](docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md). The IL/yield proof layer (variance reduction, conservation, IL/LVR on a shared price path, and a head-to-head with `LiquidityPenaltyHook`) is captured in [docs/product/smoothing-proof-evidence.md](docs/product/smoothing-proof-evidence.md).
+It also ships an **opt-in** yield-smoothing layer (disabled by default). Pools that never call `configureSmoothing` keep the pure directional-fee behavior above with no custody and no return deltas. Pools that enable smoothing accept that the hook briefly holds the captured toxicity premium as ERC-6909 claims (`afterSwapReturnDelta`) between capture in toxic regimes and a rate-limited `donate()` drip back to in-range LPs in quiet regimes. This custody tradeoff is opt-in and documented in [docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md](docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md). The IL/yield proof layer (variance reduction, conservation, IL/LVR on a shared price path, and a head-to-head with `LiquidityPenaltyHook`) is captured in [docs/product/smoothing-proof-evidence.md](docs/product/smoothing-proof-evidence.md), and the capture→escrow→drip path is proven on the real Base mainnet `PoolManager` in [docs/demos/base-mainnet-fork-smoothing-capture-drip.md](docs/demos/base-mainnet-fork-smoothing-capture-drip.md).
 
 The production hook lives in [src/DirectionalToxicityShield.sol](src/DirectionalToxicityShield.sol). Positioning and go-to-market notes are in [docs/POSITIONING.md](docs/POSITIONING.md).
 
@@ -152,6 +152,13 @@ forge test --match-contract DirectionalToxicityShieldLiveDemoTest \
 ```
 
 For an end-to-end **live testnet** run — real chain, real PoolManager, real broadcast txs, real wall-clock decay window — see [docs/demos/base-sepolia-live-fee-timeline.md](docs/demos/base-sepolia-live-fee-timeline.md). Each row in that artifact links a BaseScan tx the explorer can verify, and the captured fee path is `3000 → 3500 (toxic, capped) → 2500 (counter, floored) → 3000 (decayed back to base after >5 min quiet)`. Reproduce with [script/testnet/TestnetTimelineDemo.s.sol](script/testnet/TestnetTimelineDemo.s.sol).
+
+The **smoothing layer** has its own live-infra proof: [docs/demos/base-mainnet-fork-smoothing-capture-drip.md](docs/demos/base-mainnet-fork-smoothing-capture-drip.md) drives organic toxic flow through the same real Base mainnet `PoolManager`, escrows the toxicity premium as ERC-6909 claims, then drips a bounded `dripBps` slice to in-range LPs once the pool is quiet — asserting exact drip accounting and value conservation (`captured == dripped + remaining`). This is the on-chain counterpart to the off-chain efficacy/IL/LVR scoreboard. Reproduce via [test/DirectionalToxicityShieldSmoothingLiveDemo.t.sol](test/DirectionalToxicityShieldSmoothingLiveDemo.t.sol):
+
+```bash
+forge test --match-contract DirectionalToxicityShieldSmoothingLiveDemoTest \
+  --fork-url "$BASE_MAINNET_RPC_URL" -vv
+```
 
 ### Simulation
 
