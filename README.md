@@ -123,7 +123,7 @@ function getSmoothingReserve(PoolId poolId) external view returns (SmoothingRese
 
 `SmoothingConfig` is `{ bool enabled; uint32 dripBlockInterval; uint16 dripBps }`. Smoothing stays off until `configureSmoothing(enabled: true)`.
 
-Production hook: [src/DirectionalToxicityShield.sol](src/DirectionalToxicityShield.sol). Positioning and GTM: [docs/POSITIONING.md](docs/POSITIONING.md).
+Production hook: [src/DirectionalToxicityShield.sol](src/DirectionalToxicityShield.sol).
 
 ## Verify
 
