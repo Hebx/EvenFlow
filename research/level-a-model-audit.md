@@ -1,7 +1,7 @@
 # Level A: Model Audit — Prior-Art Source vs Our Backtest/Simulation Models
 
 Date: 2026-05-27
-Auditor: Kiro (automated source review)
+Method: automated source review of each prior-art hook vs the modeled comparator.
 
 This document compares the actual source code of each prior-art hook against the modeled comparator in our `DirectionalToxicityShieldSimulation.s.sol` and `DirectionalToxicityShieldBacktest.s.sol`. The goal is to identify fidelity gaps between our models and the real implementations.
 

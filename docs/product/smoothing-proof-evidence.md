@@ -1,23 +1,20 @@
 # Smoothing IL/Yield Proof Layer — Evidence
 
-**Author:** Kiro · **Date:** 2026-05-30 · **Repo:** `directional-toxicity-shield`
-**Status:** WS5 — captured artifact for the proof layer.
+**Status:** captured artifact for the proof layer. All numbers are reproducible from this repo via `forge test` / `forge script`.
 **Sources:**
 - Mechanism: `src/DirectionalToxicityShield.sol`
-- Model assumptions: `docs/plans/2026-05-30-il-lvr-yield-variance-model.md`
-- PRD / phase plan: `docs/plans/2026-05-30-smoothing-il-yield-proof-prd.md`
+- Reproduce the scoreboard: `script/SmoothingProofReport.s.sol`
 
 ---
 
 ## 1. What this document is
 
 The smoothing mechanism is built and live (`bcc5469` reactive integration,
-`cd8c68d` Phase-3 variance metric). It claims to deliver "IL and Yield" value
-for LPs under the UHI9 *Impermanence* theme. This doc is the receipt: the
-proof that the claim holds, expressed as a scoreboard the reviewer can
-reproduce by running `forge test`.
+`cd8c68d` Phase-3 variance metric). It claims to deliver impermanent-loss and
+yield value for LPs. This doc is the receipt: the proof that the claim holds,
+expressed as a scoreboard the reviewer can reproduce by running `forge test`.
 
-The proof layer is split into five phases, four already merged on `main`:
+The proof layer is split into five phases:
 
 | Phase | What it proves                                        | Commit      |
 | :---- | :----------------------------------------------------- | :---------- |

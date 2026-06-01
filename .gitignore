@@ -8,14 +8,10 @@ out/
 /broadcast/*/5/
 /broadcast/**/dry-run/
 
-# Docs (internal working docs stay local; prod-referenced docs tracked explicitly)
+# Docs (internal working docs stay local; only build-relevant, current docs ship)
 docs/*
-!docs/POSITIONING.md
 !docs/DEVELOPMENT.md
-!docs/plans/
 !docs/demos/
-docs/plans/*
-!docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md
 !docs/product/
 docs/product/*
 !docs/product/smoothing-proof-evidence.md
@@ -28,6 +24,11 @@ node_modules/
 
 # macOS metadata
 .DS_Store
+
+# Research notes (only claim-substantiating technical evidence ships)
+research/*
+!research/level-a-model-audit.md
+!research/level-b-comparison-results.md
 
 # Vendored prior-art repos used only for local source review (not part of build)
 external-hooks/

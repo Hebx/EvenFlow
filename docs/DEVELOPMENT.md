@@ -70,7 +70,7 @@ forge test --match-path 'test/reactive/*.sol'
 forge test --match-path 'test/ShieldReactiveForkE2E.t.sol'
 ```
 
-Full Reactive integration journal, canonical live addresses, and deploy/diagnosis lessons (classic proxies inject `rvm_id`; deploy reactive contracts with `cast send --create`, not `forge script`) are kept locally in `docs/product/reactive-diagnosis.md`.
+Reactive deploy/diagnosis lessons worth keeping in mind: classic reactive proxies inject `rvm_id`, so callback auth must check it; and reactive contracts whose constructor calls `subscribe()` must be deployed with `cast send --create` rather than `forge script` (the local revm lacks the `0x64` precompile).
 
 ## Simulation & backtests
 
