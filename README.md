@@ -21,6 +21,10 @@ The base product is intentionally lean v4:
 
 It also ships an **opt-in** yield-smoothing layer (disabled by default). Pools that never call `configureSmoothing` keep the pure directional-fee behavior above with no custody and no return deltas. Pools that enable smoothing accept that the hook briefly holds the captured toxicity premium as ERC-6909 claims (`afterSwapReturnDelta`) between capture in toxic regimes and a rate-limited `donate()` drip back to in-range LPs in quiet regimes. This custody tradeoff is opt-in and documented in [docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md](docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md). The IL/yield proof layer (variance reduction, conservation, IL/LVR on a shared price path, and a head-to-head with `LiquidityPenaltyHook`) is captured in [docs/product/smoothing-proof-evidence.md](docs/product/smoothing-proof-evidence.md), and the capture→escrow→drip path is proven on the real Base mainnet `PoolManager` in [docs/demos/base-mainnet-fork-smoothing-capture-drip.md](docs/demos/base-mainnet-fork-smoothing-capture-drip.md).
 
+A third, optional layer makes the quiet-regime drip **autonomous and hands-off** via [Reactive Network](https://reactive.network). In a long-quiet market the captured reserve can sit stranded because the drip otherwise only fires on an organic quiet-regime swap. A Reactive Smart Contract on Reactive (Lasna) subscribes to a CRON event and emits a cross-chain callback to a destination executor on Base, which calls `triggerQuietDrip(...)` on the hook — releasing the stranded reserve to LPs on a cadence, with no swap and no off-chain keeper. The hook re-validates all eligibility (regime, cooldown, reserve) on every callback, so the executor can never force an action. This path is proven end-to-end on live testnet; see [The reactive autonomous drip](#the-reactive-autonomous-drip-optional-layer) below.
+
+The three layers compose cleanly: the **directional fee** works alone with no custody; **smoothing** is opt-in per pool; the **reactive drip** is an optional autonomous trigger on top of smoothing. A pool can run any prefix of this stack.
+
 The production hook lives in [src/DirectionalToxicityShield.sol](src/DirectionalToxicityShield.sol). Positioning and go-to-market notes are in [docs/POSITIONING.md](docs/POSITIONING.md).
 
 > **Status:** unaudited. The comparisons below are reproducible model/same-flow benchmarks plus a live-infrastructure fork test against the real canonical v4 `PoolManager`. They demonstrate mechanics and behavioral differences, not realized LP PnL from live capital. Do not present them as production yield numbers.
@@ -160,7 +164,41 @@ forge test --match-contract DirectionalToxicityShieldSmoothingLiveDemoTest \
   --fork-url "$BASE_MAINNET_RPC_URL" -vv
 ```
 
-The smoothing **capture** leg is also proven **end-to-end on live Base Sepolia**: [docs/demos/base-sepolia-live-smoothing-capture.md](docs/demos/base-sepolia-live-smoothing-capture.md) captures 6 real broadcast swaps that escrow premium into the deployed hook, with the per-swap `PremiumCaptured` amounts summing to the live on-chain `reserve1` to the wei. The matching drip release on testnet is staged for the (on-hold) Reactive relay or any organic quiet-regime swap; the drip mechanism itself is proven on the mainnet fork above.
+The smoothing **capture** leg is also proven **end-to-end on live Base Sepolia**: [docs/demos/base-sepolia-live-smoothing-capture.md](docs/demos/base-sepolia-live-smoothing-capture.md) captures 6 real broadcast swaps that escrow premium into the deployed hook, with the per-swap `PremiumCaptured` amounts summing to the live on-chain `reserve1` to the wei. The matching **drip release** is now proven autonomously on testnet via Reactive (next section) and also fires on any organic quiet-regime swap; the drip mechanism itself is independently proven on the mainnet fork above.
+
+### The reactive autonomous drip (optional layer)
+
+The quiet-regime drip can run hands-off through [Reactive Network](https://reactive.network), so a stranded smoothing reserve gets returned to LPs on a cadence even when nobody is swapping — with no off-chain keeper, bot, or trusted operator.
+
+Architecture (two contracts, both in [src/reactive/](src/reactive)):
+
+- [`ShieldReactiveController`](src/reactive/ShieldReactiveController.sol) (and the single-subscription [`ShieldReactiveControllerCronOnly`](src/reactive/ShieldReactiveControllerCronOnly.sol)) runs on Reactive (Lasna). It subscribes to a CRON event (and, in the full controller, the hook's `RiskRegimeChanged` event) and emits a cross-chain `Callback` requesting `onQuietDrip` on each tick.
+- [`ShieldReactiveExecutor`](src/reactive/ShieldReactiveExecutor.sol) runs on Base. It receives the authenticated callback through the chain's callback proxy and forwards `triggerQuietDrip(poolKey)` to the hook. The hook re-validates regime, cooldown, and reserve, so a callback for a non-eligible pool is a safe no-op.
+
+```
+Reactive (Lasna)                       Base
+┌────────────────────┐   CRON tick   ┌─────────────────────┐
+│ ShieldReactive       │ ------------> │ callback proxy        │
+│ Controller (RC)      │   Callback    │   │ onQuietDrip       │
+└─────────────────────┘               │   v               │
+                                       │ ShieldReactiveExecutor│
+                                       │   triggerQuietDrip()  │
+                                       │   v                   │
+                                       │ DirectionalToxicity   │
+                                       │ Shield (donate → LPs) │
+                                       └─────────────────────┘
+```
+
+Callback authentication is two-factor: `msg.sender` must be the chain callback proxy, **and** the proxy-injected first argument must equal the registered `controllerRvmId` — the EOA that deployed the reactive contract on the Reactive Network (classic-mode proxies inject the rvm_id, not the reactive contract's address). The wiring is locked once via a set-once `setController(controller, controllerRvmId)`.
+
+**Live testnet proof.** On Base Sepolia ← Reactive Lasna, a CRON tick delivered an authenticated `onQuietDrip` that released stranded LP reserve through `donate()` with no swap. Sample e2e tx [`0x7a2b6afb30e436f9da3b1bc3dde55bc5f549654443b96fc681a029313ebed71f`](https://sepolia.basescan.org/tx/0x7a2b6afb30e436f9da3b1bc3dde55bc5f549654443b96fc681a029313ebed71f) (block 42275501): `proxy.callback → executor.onQuietDrip → DripCallbackReceived → hook.triggerQuietDrip → poolManager.donate → DripReleased → ReactiveActionApplied`. The full integration journal, the canonical live addresses, and the deploy/diagnosis lessons (classic proxies inject rvm_id; deploy reactive contracts with `cast send --create`, not `forge script`) are kept locally in `docs/product/reactive-diagnosis.md`.
+
+Reactive tests live in [test/reactive/](test/reactive) and the fork e2e in [test/ShieldReactiveForkE2E.t.sol](test/ShieldReactiveForkE2E.t.sol):
+
+```bash
+forge test --match-path 'test/reactive/*.sol'
+forge test --match-path 'test/ShieldReactiveForkE2E.t.sol'
+```
 
 ### Simulation
 
