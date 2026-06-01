@@ -1,416 +1,185 @@
 # Directional Toxicity Shield
 
-Directional Toxicity Shield is a Uniswap v4 hook that prices swap toxicity **by direction**. It tracks signed, decaying directional pressure per `PoolId`, raises the LP fee when flow keeps pushing price the same way, discounts the counter-flow that rebalances the pool, and decays back to baseline when activity goes quiet. Unlike a static fee tier, it can tell a sustained toxic run from healthy two-sided volume — without an oracle.
+> A Uniswap v4 hook that prices swap toxicity **by direction** — oracle-free, bounded, and deterministic.
+
+[![Foundry](https://img.shields.io/badge/Built%20with-Foundry-FFDB1C.svg)](https://getfoundry.sh/)
+[![Solidity](https://img.shields.io/badge/Solidity-0.8.30-363636.svg?logo=solidity)](https://soliditylang.org/)
+[![Uniswap v4](https://img.shields.io/badge/Uniswap-v4%20hook-FF007A.svg?logo=uniswap)](https://docs.uniswap.org/contracts/v4/overview)
+[![Reactive Network](https://img.shields.io/badge/Reactive-autonomous%20drip-7B3FE4.svg)](https://reactive.network)
+[![Tests](https://img.shields.io/badge/tests-151%20passing-3FB950.svg)](#verify)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+> **Status:** unaudited MVP. Benchmarks are reproducible same-flow model comparisons plus live-infrastructure fork tests against the real canonical v4 `PoolManager`. They show mechanics and behavioral differences, not realized LP PnL. Don't present them as production yield numbers.
+
+---
+
+## The problem
+
+Passive LPs bleed to informed, one-directional flow (loss-versus-rebalancing). The usual defenses can't tell a toxic run from healthy two-sided volume:
+
+- **Static fee tiers** charge one fixed fee — over-taxing benign flow, under-charging sustained adverse flow.
+- **Volatility / size fees** react to *how big*, not *which direction* the damage runs.
+- **Nezlobin-style skews** point the right way but often ignore tick sign, hold stale fees with no decay, or need an oracle.
+
+## What the Shield does
+
+It tracks a signed, decaying **directional pressure** per pool and moves the LP fee with it — no oracle, every move clamped:
 
 ```
   fee
    ^
-3500|        ____ sustained toxic flow (escalate, bounded)
-   |       /
-3000|---- /------------------ base ---------\________ decays back when quiet
-   |    /                                   
-2500|  *  <- counter-flow swap (discount below base; rewards rebalancers)
-   +------------------------------------------------> swaps over time
+3500│        ____ sustained toxic flow → escalate (bounded)
+   │       /
+3000│──── /─────────────── base ───────────\________ decays back when quiet
+   │    /
+2500│  *  ← counter-flow swap → discount below base (rewards rebalancers)
+   └──────────────────────────────────────────────────────▶ swaps over time
 ```
 
-The base product is intentionally lean v4:
+- Keep pushing price one way → fee steps **up** (bounded).
+- Trade the rebalancing direction → fee **discounts** below base.
+- Market goes quiet → pressure decays, fee returns to base.
 
-- no external oracle dependency
-- pricing is local, deterministic, and bounded per `PoolId`
-- hook permissions: `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap` (+ `afterSwapReturnDelta` only when smoothing is enabled)
+Pure v4: permissions are `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap` (plus `afterSwapReturnDelta` only when smoothing is on).
 
-It also ships an **opt-in** yield-smoothing layer (disabled by default). Pools that never call `configureSmoothing` keep the pure directional-fee behavior above with no custody and no return deltas. Pools that enable smoothing accept that the hook briefly holds the captured toxicity premium as ERC-6909 claims (`afterSwapReturnDelta`) between capture in toxic regimes and a rate-limited `donate()` drip back to in-range LPs in quiet regimes. This custody tradeoff is opt-in and documented in [docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md](docs/plans/2026-05-30-lp-yield-smoothing-design-draft.md). The IL/yield proof layer (variance reduction, conservation, IL/LVR on a shared price path, and a head-to-head with `LiquidityPenaltyHook`) is captured in [docs/product/smoothing-proof-evidence.md](docs/product/smoothing-proof-evidence.md), and the capture→escrow→drip path is proven on the real Base mainnet `PoolManager` in [docs/demos/base-mainnet-fork-smoothing-capture-drip.md](docs/demos/base-mainnet-fork-smoothing-capture-drip.md).
+## Three layers, opt-in
 
-A third, optional layer makes the quiet-regime drip **autonomous and hands-off** via [Reactive Network](https://reactive.network). In a long-quiet market the captured reserve can sit stranded because the drip otherwise only fires on an organic quiet-regime swap. A Reactive Smart Contract on Reactive (Lasna) subscribes to a CRON event and emits a cross-chain callback to a destination executor on Base, which calls `triggerQuietDrip(...)` on the hook — releasing the stranded reserve to LPs on a cadence, with no swap and no off-chain keeper. The hook re-validates all eligibility (regime, cooldown, reserve) on every callback, so the executor can never force an action. This path is proven end-to-end on live testnet; see [The reactive autonomous drip](#the-reactive-autonomous-drip-optional-layer) below.
+A pool runs any prefix of this stack. Each layer is independent and the lower layers never depend on the higher ones.
 
-The three layers compose cleanly: the **directional fee** works alone with no custody; **smoothing** is opt-in per pool; the **reactive drip** is an optional autonomous trigger on top of smoothing. A pool can run any prefix of this stack.
+```
+┌─ 1. Directional fee ────────────────────────────────────────────────┐
+│   Signed pressure → adaptive LP fee. No custody, no oracle. Always on.│
+└──────────────────────────────────────────────────────────────────────┘
+        │  opt in per pool: configureSmoothing(enabled: true)
+        ▼
+┌─ 2. Yield smoothing ────────────────────────────────────────────────┐
+│   Capture the toxicity premium in toxic regimes → drip it back to     │
+│   in-range LPs in quiet regimes. Smooths realized LP yield.           │
+└──────────────────────────────────────────────────────────────────────┘
+        │  optional autonomous trigger
+        ▼
+┌─ 3. Reactive drip ──────────────────────────────────────────────────┐
+│   A Reactive Network cron fires the quiet-regime drip cross-chain,    │
+│   so a stranded reserve is returned to LPs even with zero swaps.      │
+└──────────────────────────────────────────────────────────────────────┘
+```
 
-The production hook lives in [src/DirectionalToxicityShield.sol](src/DirectionalToxicityShield.sol). Positioning and go-to-market notes are in [docs/POSITIONING.md](docs/POSITIONING.md).
-
-> **Status:** unaudited. The comparisons below are reproducible model/same-flow benchmarks plus a live-infrastructure fork test against the real canonical v4 `PoolManager`. They demonstrate mechanics and behavioral differences, not realized LP PnL from live capital. Do not present them as production yield numbers.
+| Layer | Custody? | Default | Proven on |
+|---|:--:|:--:|---|
+| **1 · Directional fee** | none | always on | local + Base mainnet fork + live Base Sepolia |
+| **2 · Yield smoothing** | opt-in (ERC-6909 claims) | off | Base mainnet fork + live Base Sepolia capture |
+| **3 · Reactive drip** | none added | optional | live Base Sepolia ← Reactive Lasna |
 
 ## How it compares
 
 | Approach | Reacts to direction? | Discounts counter-flow? | Decays when quiet? | Oracle-free? |
 |---|:--:|:--:|:--:|:--:|
-| Static fee tier (e.g. live Clanker static-fee hook) | per-direction only, fixed | no | no | yes |
+| Static fee tier (e.g. live Clanker hook) | per-direction, fixed | no | no | yes |
 | Volatility / size dynamic fee | no | no | n/a | usually |
-| Nezlobin-style skew (JDS / Regis / InfHook) | yes | partial / no | often no | varies |
+| Nezlobin skew (JDS / Regis / InfHook) | yes | partial / no | often no | varies |
 | **Directional Toxicity Shield** | **yes (signed pressure)** | **yes** | **yes** | **yes** |
 
-Side-by-side fee behavior on identical swap flow, from [test/PriorArtComparison.t.sol](test/PriorArtComparison.t.sol) and [test/DirectionalToxicityShieldMainnetComparison.t.sol](test/DirectionalToxicityShieldMainnetComparison.t.sol):
+On identical swap flow ([test/PriorArtComparison.t.sol](test/PriorArtComparison.t.sol), [test/DirectionalToxicityShieldMainnetComparison.t.sol](test/DirectionalToxicityShieldMainnetComparison.t.sol)):
 
-- **Counter-flow:** Shield discounts to 2500 while JDS/InfHook/VPIN stay flat at 3000 (Regis trims only to ~2559) — the Shield actively rewards rebalancing flow.
-- **Toxic-then-quiet:** Shield decays back to 3000; JDS spikes to 6000 and InfHook to 4767 on the next swap because they retain or over-correct without proper decay.
-- **Vs a live production static hook:** against the real Clanker static-fee hook on a Base mainnet fork, the static fee stays fixed across toxic, counter-flow, and quiet phases while the Shield escalates, discounts, and decays.
+- **Counter-flow:** Shield discounts to 2500; JDS/InfHook/VPIN stay flat at 3000 (Regis only trims to ~2559).
+- **Toxic-then-quiet:** Shield decays back to 3000; JDS spikes to 6000 and InfHook to 4767 because they don't decay.
+- **Vs the live Clanker static-fee hook** on a Base mainnet fork: static stays fixed across all phases while the Shield escalates → discounts → decays.
+
+## The reactive autonomous drip
+
+In a long-quiet market the smoothing reserve can sit stranded — the in-pool drip only fires on an organic quiet-regime swap. [Reactive Network](https://reactive.network) closes that gap with no keeper, bot, or trusted operator:
+
+```
+   Reactive (Lasna)                      Base
+ ┌────────────────────┐               ┌────────────────────────┐
+ │ ShieldReactive     │  cross-chain  │ callback proxy         │
+ │ Controller         │ ───Callback──▶│   └─▶ ShieldReactive   │
+ │ (subscribes CRON)  │  per cron tick│       Executor         │
+ └────────────────────┘               │         └─▶ Shield     │
+                                       │   triggerQuietDrip()   │
+                                       │   donate() ──▶ LPs     │
+                                       └────────────────────────┘
+```
+
+The executor never forces anything: the hook re-validates regime, cooldown, and reserve on every callback, so an ineligible pool is a safe no-op. Callback auth is two-factor — `msg.sender` must be the chain callback proxy, **and** the proxy-injected `rvm_id` must equal the registered `controllerRvmId` (locked once via `setController`).
+
+**Live testnet proof.** On Base Sepolia ← Reactive Lasna, a cron tick delivered an authenticated `onQuietDrip` that released stranded LP reserve through `donate()` with no swap — tx [`0x7a2b6afb…ed71f`](https://sepolia.basescan.org/tx/0x7a2b6afb30e436f9da3b1bc3dde55bc5f549654443b96fc681a029313ebed71f) (block 42275501): `proxy.callback → executor.onQuietDrip → DripCallbackReceived → triggerQuietDrip → donate → DripReleased`.
+
+Contracts: [`ShieldReactiveController`](src/reactive/ShieldReactiveController.sol) / [`ShieldReactiveControllerCronOnly`](src/reactive/ShieldReactiveControllerCronOnly.sol) (Reactive) and [`ShieldReactiveExecutor`](src/reactive/ShieldReactiveExecutor.sol) (Base).
 
 ## Public API
 
-Beyond the v4 hook callbacks, the hook exposes:
-
 ```solidity
-// Per-pool fee policy (bounds, decay, pressure scaling) — view
+// Views
 function getFeePolicy(PoolId poolId) external view returns (FeePolicy memory);
-
-// Current signed directional pressure + last applied fee — view
 function getDirectionalState(PoolId poolId) external view returns (DirectionalState memory);
-
-// Preview the fee a given swap would pay, without mutating state — view
 function previewFee(PoolKey calldata key, SwapParams calldata params) external view returns (uint24);
 
-// Opt in to the yield-smoothing layer for a pool (configurer-gated)
+// Opt-in yield smoothing (configurer-gated)
 function configureSmoothing(PoolKey calldata key, SmoothingConfig calldata config) external;
 function getSmoothingConfig(PoolId poolId) external view returns (SmoothingConfig memory);
 function getSmoothingReserve(PoolId poolId) external view returns (SmoothingReserve memory);
 ```
 
-`SmoothingConfig` is `{ bool enabled; uint32 dripBlockInterval; uint16 dripBps }`. Smoothing is off until `configureSmoothing` is called with `enabled = true`.
+`SmoothingConfig` is `{ bool enabled; uint32 dripBlockInterval; uint16 dripBps }`. Smoothing stays off until `configureSmoothing(enabled: true)`.
 
-### Verify
+Production hook: [src/DirectionalToxicityShield.sol](src/DirectionalToxicityShield.sol). Positioning and GTM: [docs/POSITIONING.md](docs/POSITIONING.md).
+
+## Verify
 
 ```bash
+forge install
 forge fmt --check
 forge build
-forge test
+forge test          # 151 passing, 4 fork-only skipped
 ```
 
-### Onchain Test Gates
-
-Stage 1 runs the directional scenario against a fresh local Foundry v4 deployment:
-
-```bash
-forge test --match-contract DirectionalToxicityShieldOnchainTest \
-  --match-test test_stage1LocalFreshV4RunsDirectionalScenario -vvv
-```
-
-Stage 2 runs the same scenario on forks against canonical Uniswap v4 deployments:
-
-```bash
-forge test --fork-url https://mainnet.base.org \
-  --match-contract DirectionalToxicityShieldOnchainTest \
-  --match-test 'test_stage2*' -vvv
-
-forge test --fork-url https://mainnet.unichain.org \
-  --match-contract DirectionalToxicityShieldOnchainTest \
-  --match-test 'test_stage2*' -vvv
-```
-
-Do not broadcast to testnet until both gates pass. Stage 3 target is Unichain Sepolia, using the official v4 `PoolManager` at `0x00B036B58a818B1BC34d502D3fE730Db729e62AC`. Use a funded keystore account and record the deployed hook address, pool id, token addresses, swap transactions, and explorer links before treating any testnet result as proof.
-
-Stage 3 Unichain Sepolia scenario:
-
-```bash
-forge script script/testnet/UnichainSepoliaScenario.s.sol:UnichainSepoliaScenario \
-  --rpc-url "$UNICHAIN_SEPOLIA_RPC_URL"
-
-forge script script/testnet/UnichainSepoliaScenario.s.sol:UnichainSepoliaScenario \
-  --rpc-url "$UNICHAIN_SEPOLIA_RPC_URL" \
-  --broadcast
-```
-
-Set `DTS_HOOK_ADDRESS` when rerunning the scenario against an already deployed hook instead of deploying a new mined hook:
-
-```bash
-DTS_HOOK_ADDRESS=0xE7cd65413205e10B4005017F8d000a66E43970c0 \
-forge script script/testnet/UnichainSepoliaScenario.s.sol:UnichainSepoliaScenario \
-  --rpc-url "$UNICHAIN_SEPOLIA_RPC_URL"
-```
-
-The latest Unichain Sepolia run is recorded in [deployments/unichain-sepolia-stage3-2026-05-30-smoothing.md](deployments/unichain-sepolia-stage3-2026-05-30-smoothing.md) (opt-in yield-smoothing + optimizer/via-IR enabled; supersedes the `-2026-05-30.md` hardening redeploy and the original `-2026-05-25.md` run).
-
-Stage 3 Base Sepolia scenario uses the same mock-token flow against canonical v4 deployments:
-
-```bash
-forge script script/testnet/BaseSepoliaScenario.s.sol:BaseSepoliaScenario \
-  --rpc-url "$BASE_SEPOLIA_RPC_URL"
-
-forge script script/testnet/BaseSepoliaScenario.s.sol:BaseSepoliaScenario \
-  --rpc-url "$BASE_SEPOLIA_RPC_URL" \
-  --broadcast
-```
-
-Base Sepolia USDC is optional for the MVP proof. Use the mock-token scenario first to verify hook mechanics, then add a USDC-paired demo only after confirming the current testnet USDC address and the deployer balance.
-
-The latest Base Sepolia mock-token run is recorded in [deployments/base-sepolia-stage3-2026-05-30-smoothing.md](deployments/base-sepolia-stage3-2026-05-30-smoothing.md) (opt-in yield-smoothing + optimizer/via-IR enabled; supersedes the `-2026-05-30.md` hardening redeploy and the original `-2026-05-25.md` run).
-
-### Stage 4: Live-Production Comparison
-
-Stage 4 deploys the Shield against the **real** canonical Base mainnet v4 `PoolManager` and proves a live production hook (Clanker static-fee, `0xDd5EeaFf7BD481AD55Db083062b13a3cdf0A68CC`) is co-located on that same `PoolManager`, then contrasts adaptive-vs-static fee behavior on identical swap flow.
-
-```bash
-# Behavioral contrast runs locally (CI-safe); live-hook assertion is skipped off-fork:
-forge test --match-contract DirectionalToxicityShieldMainnetComparisonTest -vv
-
-# Full proof against real Base mainnet infrastructure:
-forge test --match-contract DirectionalToxicityShieldMainnetComparisonTest \
-  --fork-url "$BASE_MAINNET_RPC_URL" -vv
-```
-
-Against the Base mainnet fork this confirms the live Clanker hook (12,558 bytes of deployed code) shares the canonical `PoolManager` (`0x498581fF718922c3f8e6A244956aF099B2652b2b`) that the freshly mined Shield deploys against — so the comparison is against real production infrastructure, not a mock. The static hook holds a fixed fee through toxic, counter-flow, and quiet phases while the Shield escalates (3000→3500), discounts counter-flow (2500), and decays back to base (3000).
-
-For a narrated end-to-end fee journey on that same real PoolManager, see the captured artifact in [docs/demos/base-mainnet-fork-fee-timeline.md](docs/demos/base-mainnet-fork-fee-timeline.md), reproducible via [test/DirectionalToxicityShieldLiveDemo.t.sol](test/DirectionalToxicityShieldLiveDemo.t.sol):
-
-```bash
-forge test --match-contract DirectionalToxicityShieldLiveDemoTest \
-  --fork-url "$BASE_MAINNET_RPC_URL" -vv
-```
-
-For an end-to-end **live testnet** run — real chain, real PoolManager, real broadcast txs, real wall-clock decay window — see [docs/demos/base-sepolia-live-fee-timeline.md](docs/demos/base-sepolia-live-fee-timeline.md). Each row in that artifact links a BaseScan tx the explorer can verify, and the captured fee path is `3000 → 3500 (toxic, capped) → 2500 (counter, floored) → 3000 (decayed back to base after >5 min quiet)`. Reproduce with [script/testnet/TestnetTimelineDemo.s.sol](script/testnet/TestnetTimelineDemo.s.sol).
-
-The **smoothing layer** has its own live-infra proof: [docs/demos/base-mainnet-fork-smoothing-capture-drip.md](docs/demos/base-mainnet-fork-smoothing-capture-drip.md) drives organic toxic flow through the same real Base mainnet `PoolManager`, escrows the toxicity premium as ERC-6909 claims, then drips a bounded `dripBps` slice to in-range LPs once the pool is quiet — asserting exact drip accounting and value conservation (`captured == dripped + remaining`). This is the on-chain counterpart to the off-chain efficacy/IL/LVR scoreboard. Reproduce via [test/DirectionalToxicityShieldSmoothingLiveDemo.t.sol](test/DirectionalToxicityShieldSmoothingLiveDemo.t.sol):
-
-```bash
-forge test --match-contract DirectionalToxicityShieldSmoothingLiveDemoTest \
-  --fork-url "$BASE_MAINNET_RPC_URL" -vv
-```
-
-The smoothing **capture** leg is also proven **end-to-end on live Base Sepolia**: [docs/demos/base-sepolia-live-smoothing-capture.md](docs/demos/base-sepolia-live-smoothing-capture.md) captures 6 real broadcast swaps that escrow premium into the deployed hook, with the per-swap `PremiumCaptured` amounts summing to the live on-chain `reserve1` to the wei. The matching **drip release** is now proven autonomously on testnet via Reactive (next section) and also fires on any organic quiet-regime swap; the drip mechanism itself is independently proven on the mainnet fork above.
-
-### The reactive autonomous drip (optional layer)
-
-The quiet-regime drip can run hands-off through [Reactive Network](https://reactive.network), so a stranded smoothing reserve gets returned to LPs on a cadence even when nobody is swapping — with no off-chain keeper, bot, or trusted operator.
-
-Architecture (two contracts, both in [src/reactive/](src/reactive)):
-
-- [`ShieldReactiveController`](src/reactive/ShieldReactiveController.sol) (and the single-subscription [`ShieldReactiveControllerCronOnly`](src/reactive/ShieldReactiveControllerCronOnly.sol)) runs on Reactive (Lasna). It subscribes to a CRON event (and, in the full controller, the hook's `RiskRegimeChanged` event) and emits a cross-chain `Callback` requesting `onQuietDrip` on each tick.
-- [`ShieldReactiveExecutor`](src/reactive/ShieldReactiveExecutor.sol) runs on Base. It receives the authenticated callback through the chain's callback proxy and forwards `triggerQuietDrip(poolKey)` to the hook. The hook re-validates regime, cooldown, and reserve, so a callback for a non-eligible pool is a safe no-op.
-
-```
-Reactive (Lasna)                       Base
-┌────────────────────┐   CRON tick   ┌─────────────────────┐
-│ ShieldReactive       │ ------------> │ callback proxy        │
-│ Controller (RC)      │   Callback    │   │ onQuietDrip       │
-└─────────────────────┘               │   v               │
-                                       │ ShieldReactiveExecutor│
-                                       │   triggerQuietDrip()  │
-                                       │   v                   │
-                                       │ DirectionalToxicity   │
-                                       │ Shield (donate → LPs) │
-                                       └─────────────────────┘
-```
-
-Callback authentication is two-factor: `msg.sender` must be the chain callback proxy, **and** the proxy-injected first argument must equal the registered `controllerRvmId` — the EOA that deployed the reactive contract on the Reactive Network (classic-mode proxies inject the rvm_id, not the reactive contract's address). The wiring is locked once via a set-once `setController(controller, controllerRvmId)`.
-
-**Live testnet proof.** On Base Sepolia ← Reactive Lasna, a CRON tick delivered an authenticated `onQuietDrip` that released stranded LP reserve through `donate()` with no swap. Sample e2e tx [`0x7a2b6afb30e436f9da3b1bc3dde55bc5f549654443b96fc681a029313ebed71f`](https://sepolia.basescan.org/tx/0x7a2b6afb30e436f9da3b1bc3dde55bc5f549654443b96fc681a029313ebed71f) (block 42275501): `proxy.callback → executor.onQuietDrip → DripCallbackReceived → hook.triggerQuietDrip → poolManager.donate → DripReleased → ReactiveActionApplied`. The full integration journal, the canonical live addresses, and the deploy/diagnosis lessons (classic proxies inject rvm_id; deploy reactive contracts with `cast send --create`, not `forge script`) are kept locally in `docs/product/reactive-diagnosis.md`.
-
-Reactive tests live in [test/reactive/](test/reactive) and the fork e2e in [test/ShieldReactiveForkE2E.t.sol](test/ShieldReactiveForkE2E.t.sol):
+Reactive layer:
 
 ```bash
 forge test --match-path 'test/reactive/*.sol'
 forge test --match-path 'test/ShieldReactiveForkE2E.t.sol'
 ```
 
-### Simulation
+Against real infrastructure (Base mainnet fork — proves the Shield and the live Clanker hook share the canonical `PoolManager` `0x498581fF718922c3f8e6A244956aF099B2652b2b`, and runs the capture → escrow → drip path with value conservation `captured == dripped + remaining`):
 
 ```bash
-forge script script/DirectionalToxicityShieldSimulation.s.sol:DirectionalToxicityShieldSimulation
+forge test --match-contract DirectionalToxicityShieldMainnetComparisonTest --fork-url "$BASE_MAINNET_RPC_URL" -vv
+forge test --match-contract DirectionalToxicityShieldSmoothingLiveDemoTest --fork-url "$BASE_MAINNET_RPC_URL" -vv
 ```
 
-### Backtests
+Captured artifacts (each row links an explorer-verifiable tx):
+
+- Fee journey on the real PoolManager — [docs/demos/base-mainnet-fork-fee-timeline.md](docs/demos/base-mainnet-fork-fee-timeline.md)
+- Live Base Sepolia fee path `3000 → 3500 → 2500 → 3000` — [docs/demos/base-sepolia-live-fee-timeline.md](docs/demos/base-sepolia-live-fee-timeline.md)
+- Smoothing capture → drip on the real PoolManager — [docs/demos/base-mainnet-fork-smoothing-capture-drip.md](docs/demos/base-mainnet-fork-smoothing-capture-drip.md)
+- Live Base Sepolia premium capture (6 broadcast swaps, sums to on-chain reserve to the wei) — [docs/demos/base-sepolia-live-smoothing-capture.md](docs/demos/base-sepolia-live-smoothing-capture.md)
+- IL / LVR / yield-variance scoreboard — [docs/product/smoothing-proof-evidence.md](docs/product/smoothing-proof-evidence.md)
+
+## Deploy
 
 ```bash
-forge script script/DirectionalToxicityShieldBacktest.s.sol:DirectionalToxicityShieldBacktest
-```
-
-The backtest harness compares Shield against modeled prior-art mechanisms: AsymmetricFeesHook/JDS previous-move Nezlobin, Anti-Toxicity Hook-style directional imbalance, Dynamic AMM Fees-style volatility/size pricing, DetoxHook-style oracle arbitrage capture, and VPIN-style volume imbalance. These are deterministic same-flow model backtests, not audited reimplementations of competitor contracts.
-
-The simulation compares:
-
-- static fee baseline
-- plain last-move directional baseline
-- JDS AsymmetricFeesHook-style previous-move fee skew, normalized to tick movement
-- RegisGraptin Nezlobin side-skew model, using its `abs(tickDelta) * 750 / 1000` fee adjustment
-- InfHook Nezlobin model, including its stateful dynamic-fee behavior when tick movement goes quiet
-- Jaseempk NZ-Directional-Fee threshold model, normalized to ticks because the source implementation depends on oracle/liquidity-shaped `cDelta`
-- deployed fixed-direction comparator: Clanker Static Fee Hook on Base (`0xDd5EeaFf7BD481AD55Db083062b13a3cdf0A68CC`), modeled from its verified source and an observed `PoolInitialized` fee pair of `10000/5000`
-- Directional Toxicity Shield decaying pressure policy
-
-It prints fee totals, max fee, and final pressure for deterministic one-direction, alternating-flow, and quiet-reset scenarios. The source-code comparators show why a plain Nezlobin hook is not enough by itself: some variants ignore tick sign, some retain stale fees without decay, and some need oracle/liquidity tuning that is outside this MVP. The deployed comparator is a fixed per-direction fee hook, not a signed pressure accumulator, so treat it as a live directional-fee reference point rather than a like-for-like product benchmark.
-
-Source references:
-
-- https://github.com/Jds-23/asymmetric-fees-hook
-- https://github.com/RegisGraptin/Uniswap-Nezlobin-Hook
-- https://github.com/emrhncvsgl/InfHook
-- https://github.com/Jaseempk/NZ-Directional-Fee
-
-### Deployment Dry Run
-
-With local Anvil running:
-
-```bash
+# Local dry run (Anvil)
 forge script script/00_DeployHook.s.sol:DeployHookScript \
-  --rpc-url http://127.0.0.1:8545 \
-  --private-key <ANVIL_PRIVATE_KEY>
+  --rpc-url http://127.0.0.1:8545 --private-key <ANVIL_PRIVATE_KEY> --broadcast
+
+# Live network (use a keystore account, not a raw key)
+forge script script/00_DeployHook.s.sol:DeployHookScript \
+  --rpc-url <RPC_URL> --account <KEY_NAME> --sender <ADDRESS> --broadcast
 ```
 
-The deploy script mines a hook address for the MVP permission bits and deploys `DirectionalToxicityShield` with the configured v4 `PoolManager`.
+The script mines a CREATE2 salt for the hook permission bits and deploys against the configured v4 `PoolManager`. Latest testnet runs are recorded under [deployments/](deployments/). Full testnet stage gates, the simulation/backtest harness, keystore setup, and troubleshooting live in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-### Security Posture
+## Security posture
 
-- **Unaudited.** No third-party audit has been performed. Do not deploy with real capital without an independent review.
-- **No oracle / no admin price input.** Fees are derived only from local pool state (tick movement, elapsed time, liquidity), so there is no external price feed to manipulate or trust.
-- **Bounded by construction.** Every fee is clamped to `[minFee, maxFee]` with a per-update `maxFeeStep`; directional pressure is clamped to `maxPressure`. A single swap cannot move the fee arbitrarily.
-- **Custody is opt-in.** With smoothing disabled (the default) the hook takes no return delta and never holds funds. Only `configureSmoothing(enabled: true)` lets the hook hold captured premium as ERC-6909 claims before dripping it back via `donate()`. `configureSmoothing` is access-controlled to the pool configurer.
-- **Determinism.** Behavior is reproducible from on-chain state; the same flow produces the same fees, which is why the comparison tests are deterministic.
-- **Reentrancy / accounting.** All settlement goes through the canonical v4 `PoolManager` lock; the hook holds no external balances when smoothing is off.
+- **Unaudited.** No third-party audit. Do not deploy with real capital without independent review.
+- **No oracle, no admin price input.** Fees derive only from local pool state (tick movement, elapsed time, liquidity) — nothing external to manipulate.
+- **Bounded by construction.** Every fee is clamped to `[minFee, maxFee]` with a per-update `maxFeeStep`; pressure is clamped to `maxPressure`. One swap can't move the fee arbitrarily.
+- **Custody is opt-in.** Smoothing off (default) → no return delta, no funds held. Smoothing on → the hook holds captured premium as ERC-6909 claims before `donate()`. `configureSmoothing` is gated to the pool configurer.
+- **Settlement is canonical.** Everything goes through the v4 `PoolManager` lock; the hook holds no external balances when smoothing is off.
 
-Report security concerns privately rather than opening a public issue until a disclosure process is in place.
+Report security concerns privately rather than opening a public issue.
 
-### Requirements
+## Resources
 
-This template is designed to work with Foundry (stable). If you are using Foundry Nightly, you may encounter compatibility issues. You can update your Foundry installation to the latest stable version by running:
-
-```
-foundryup
-```
-
-To set up the project, run the following commands in your terminal to install dependencies and run the tests:
-
-```
-forge install
-forge test
-```
-
-### Local Development
-
-Other than writing unit tests (recommended!), you can only deploy & test hooks on [anvil](https://book.getfoundry.sh/anvil/) locally. Scripts are available in the `script/` directory, which can be used to deploy hooks, create pools, provide liquidity and swap tokens. The scripts support both local `anvil` environment as well as running them directly on a production network.
-
-### Executing locally with using **Anvil**:
-
-1. Start Anvil (or fork a specific chain using anvil):
-
-```bash
-anvil
-```
-
-or
-
-```bash
-anvil --fork-url <YOUR_RPC_URL>
-```
-
-2. Execute scripts:
-
-```bash
-forge script script/00_DeployHook.s.sol \
-    --rpc-url http://localhost:8545 \
-    --private-key <PRIVATE_KEY> \
-    --broadcast
-```
-
-### Using **RPC URLs** (actual transactions):
-
-:::info
-It is best to not store your private key even in .env or enter it directly in the command line. Instead use the `--account` flag to select your private key from your keystore.
-:::
-
-### Follow these steps if you have not stored your private key in the keystore:
-
-<details>
-
-1. Add your private key to the keystore:
-
-```bash
-cast wallet import <SET_A_NAME_FOR_KEY> --interactive
-```
-
-2. You will prompted to enter your private key and set a password, fill and press enter:
-
-```
-Enter private key: <YOUR_PRIVATE_KEY>
-Enter keystore password: <SET_NEW_PASSWORD>
-```
-
-You should see this:
-
-```
-`<YOUR_WALLET_PRIVATE_KEY_NAME>` keystore was saved successfully. Address: <YOUR_WALLET_ADDRESS>
-```
-
-::: warning
-Use `history -c` to clear your command history.
-:::
-
-</details>
-
-1. Execute scripts:
-
-```bash
-forge script script/00_DeployHook.s.sol \
-    --rpc-url <YOUR_RPC_URL> \
-    --account <YOUR_WALLET_PRIVATE_KEY_NAME> \
-    --sender <YOUR_WALLET_ADDRESS> \
-    --broadcast
-```
-
-You will prompted to enter your wallet password, fill and press enter:
-
-```
-Enter keystore password: <YOUR_PASSWORD>
-```
-
-### Key Modifications to note:
-
-1. Update the `token0` and `token1` addresses in the `BaseScript.sol` file to match the tokens you want to use in the network of your choice for sepolia and mainnet deployments.
-2. Update the `token0Amount` and `token1Amount` in the `CreatePoolAndAddLiquidity.s.sol` file to match the amount of tokens you want to provide liquidity with.
-3. Update the `token0Amount` and `token1Amount` in the `AddLiquidity.s.sol` file to match the amount of tokens you want to provide liquidity with.
-4. Update the `amountIn` and `amountOutMin` in the `Swap.s.sol` file to match the amount of tokens you want to swap.
-
-### Verifying the hook contract
-
-```bash
-forge verify-contract \
-  --rpc-url <URL> \
-  --chain <CHAIN_NAME_OR_ID> \
-  # Generally etherscan
-  --verifier <Verification_Provider> \
-  # Use --etherscan-api-key <ETHERSCAN_API_KEY> if you are using etherscan
-  --verifier-api-key <Verification_Provider_API_KEY> \
-  --constructor-args <ABI_ENCODED_ARGS> \
-  --num-of-optimizations <OPTIMIZER_RUNS> \
-  <Contract_Address> \
-  <path/to/Contract.sol:ContractName>
-  --watch
-```
-
-### Troubleshooting
-
-<details>
-
-#### Permission Denied
-
-When installing dependencies with `forge install`, Github may throw a `Permission Denied` error
-
-Typically caused by missing Github SSH keys, and can be resolved by following the steps [here](https://docs.github.com/en/github/authenticating-to-github/connecting-to-github-with-ssh)
-
-Or [adding the keys to your ssh-agent](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent#adding-your-ssh-key-to-the-ssh-agent), if you have already uploaded SSH keys
-
-#### Anvil fork test failures
-
-Some versions of Foundry may limit contract code size to ~25kb, which could prevent local tests to fail. You can resolve this by setting the `code-size-limit` flag
-
-```
-anvil --code-size-limit 40000
-```
-
-#### Hook deployment failures
-
-Hook deployment failures are caused by incorrect flags or incorrect salt mining
-
-1. Verify the flags are in agreement:
-   - `getHookCalls()` returns the correct flags
-   - `flags` provided to `HookMiner.find(...)`
-2. Verify salt mining is correct:
-   - In **forge test**: the _deployer_ for: `new Hook{salt: salt}(...)` and `HookMiner.find(deployer, ...)` are the same. This will be `address(this)`. If using `vm.prank`, the deployer will be the pranking address
-   - In **forge script**: the deployer must be the CREATE2 Proxy: `0x4e59b44847b379578588920cA78FbF26c0B4956C`
-     - If anvil does not have the CREATE2 deployer, your foundry may be out of date. You can update it with `foundryup`
-
-</details>
-
-### Additional Resources
-
-- [Uniswap v4 docs](https://docs.uniswap.org/contracts/v4/overview)
-- [v4-periphery](https://github.com/uniswap/v4-periphery)
-- [v4-core](https://github.com/uniswap/v4-core)
-- [v4-by-example](https://v4-by-example.org)
+[Uniswap v4 docs](https://docs.uniswap.org/contracts/v4/overview) · [v4-core](https://github.com/uniswap/v4-core) · [v4-periphery](https://github.com/uniswap/v4-periphery) · [Reactive Network docs](https://dev.reactive.network/)

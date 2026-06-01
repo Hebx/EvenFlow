@@ -11,6 +11,7 @@ out/
 # Docs (internal working docs stay local; prod-referenced docs tracked explicitly)
 docs/*
 !docs/POSITIONING.md
+!docs/DEVELOPMENT.md
 !docs/plans/
 !docs/demos/
 docs/plans/*
