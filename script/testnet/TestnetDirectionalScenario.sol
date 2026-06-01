@@ -159,18 +159,14 @@ abstract contract TestnetDirectionalScenario is Script {
         tokenA.approve(address(contracts_.swapRouter), type(uint256).max);
         tokenB.approve(address(contracts_.swapRouter), type(uint256).max);
 
-        contracts_.permit2.approve(
-            address(tokenA), address(contracts_.positionManager), type(uint160).max, type(uint48).max
-        );
-        contracts_.permit2.approve(
-            address(tokenB), address(contracts_.positionManager), type(uint160).max, type(uint48).max
-        );
-        contracts_.permit2.approve(
-            address(tokenA), address(contracts_.poolManager), type(uint160).max, type(uint48).max
-        );
-        contracts_.permit2.approve(
-            address(tokenB), address(contracts_.poolManager), type(uint160).max, type(uint48).max
-        );
+        contracts_.permit2
+            .approve(address(tokenA), address(contracts_.positionManager), type(uint160).max, type(uint48).max);
+        contracts_.permit2
+            .approve(address(tokenB), address(contracts_.positionManager), type(uint160).max, type(uint48).max);
+        contracts_.permit2
+            .approve(address(tokenA), address(contracts_.poolManager), type(uint160).max, type(uint48).max);
+        contracts_.permit2
+            .approve(address(tokenB), address(contracts_.poolManager), type(uint160).max, type(uint48).max);
     }
 
     function _poolKey(TestnetScenarioMockERC20 tokenA, TestnetScenarioMockERC20 tokenB, DirectionalToxicityShield hook)
