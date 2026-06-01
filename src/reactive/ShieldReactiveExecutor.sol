@@ -18,18 +18,22 @@ import {IDirectionalToxicityShield} from "./IDirectionalToxicityShield.sol";
 ///     callback proxy. The classic `AbstractCallback` constructor records the
 ///     proxy as the `vendor` and adds it to the authorized-sender ACL, so
 ///     `msg.sender == proxy` is enforced via `authorizedSenderOnly`.
-///  2. The proxy injects the originating reactive contract address as the FIRST
-///     argument of each callback; we require it to equal the registered
-///     `controller`.
+///  2. The proxy injects the originating reactive contract's `rvm_id` (the EOA
+///     that deployed the reactive contract on the Reactive Network) as the
+///     FIRST argument of each callback; we require it to equal the registered
+///     {controllerRvmId}. NOTE: classic-mode proxies inject the rvm_id, not the
+///     reactive contract's address. Checking the contract address here would
+///     reject every legitimate delivery.
 ///  3. This executor is the only address wired as the hook's reactive executor,
 ///     so the hook itself gates the action and re-validates ALL eligibility
 ///     (quiet regime, cooldown, reserve). This executor never asserts pool state.
 ///
 /// Deploy ordering: the executor and the Lasna controller have a mutual address
-/// dependency. We break it with a set-once `controller`: deploy the executor
+/// dependency. We break it with a set-once {setController}: deploy the executor
 /// first (controller unset), deploy the controller on Lasna pointing at this
-/// executor, then call {setController} once to lock the wiring. While unset, no
-/// callback can pass authorization.
+/// executor, then call {setController} once with both the controller contract
+/// address and its rvm_id (the EOA broadcaster of the Lasna deploy) to lock the
+/// wiring. While unset, no callback can pass authorization.
 ///
 /// PoolKeys are registered by the owner because callbacks carry only the indexed
 /// PoolId and an action selector, not the full key.
@@ -42,8 +46,16 @@ contract ShieldReactiveExecutor is AbstractCallback {
     /// @notice Deployer authorized to register pools and set the controller.
     address public immutable owner;
 
-    /// @notice The authorized Lasna reactive contract (set once, post-deploy).
+    /// @notice The authorized Lasna reactive contract address (set once,
+    /// post-deploy). Stored as on-chain wiring metadata; NOT used for callback
+    /// authentication (the proxy injects {controllerRvmId}, not this address).
     address public controller;
+
+    /// @notice The rvm_id of the authorized Lasna reactive contract: the EOA
+    /// that deployed it on the Reactive Network. The callback proxy injects
+    /// this address as the first argument of every delivered callback, and we
+    /// gate authorization against it. Set once together with {controller}.
+    address public controllerRvmId;
 
     /// @notice Registered pool keys by PoolId (set by owner).
     mapping(PoolId => PoolKey) private _poolKeys;
@@ -53,11 +65,12 @@ contract ShieldReactiveExecutor is AbstractCallback {
     error ControllerAlreadySet();
     error ControllerUnset();
     error ControllerZero();
+    error ControllerRvmIdZero();
     error UntrustedProxy(address caller);
     error UnauthorizedReactive(address sender, address expected);
     error PoolNotRegistered(PoolId poolId);
 
-    event ControllerSet(address indexed controller);
+    event ControllerSet(address indexed controller, address indexed controllerRvmId);
     event PoolRegistered(PoolId indexed poolId);
     event DripCallbackReceived(PoolId indexed poolId);
     event PolicyModeCallbackReceived(PoolId indexed poolId, uint8 mode);
@@ -79,11 +92,21 @@ contract ShieldReactiveExecutor is AbstractCallback {
     }
 
     /// @notice Lock in the authorized Lasna controller. Callable once by owner.
-    function setController(address controller_) external onlyOwner {
-        if (controller != address(0)) revert ControllerAlreadySet();
+    /// @param controller_ Lasna reactive-contract address (informational wiring).
+    /// @param controllerRvmId_ rvm_id of the Lasna reactive contract: the EOA
+    /// that deployed it on the Reactive Network. The callback proxy injects
+    /// this EOA as the first arg of every callback, so this is the address
+    /// {_authCallback} actually checks against.
+    /// @dev We require {controllerRvmId_} explicitly even though it is often the
+    /// same EOA as {owner} on test deployments — at scale the controller may be
+    /// deployed from a different broadcaster than the executor.
+    function setController(address controller_, address controllerRvmId_) external onlyOwner {
+        if (controllerRvmId != address(0)) revert ControllerAlreadySet();
         if (controller_ == address(0)) revert ControllerZero();
+        if (controllerRvmId_ == address(0)) revert ControllerRvmIdZero();
         controller = controller_;
-        emit ControllerSet(controller_);
+        controllerRvmId = controllerRvmId_;
+        emit ControllerSet(controller_, controllerRvmId_);
     }
 
     /// @notice Register the full PoolKey for a pool so callbacks can address it.
@@ -125,14 +148,17 @@ contract ShieldReactiveExecutor is AbstractCallback {
     ///     AbstractCallback's `authorizedSenderOnly` pattern — the proxy is the
     ///     only address in the `senders` ACL).
     ///  2. The injected first argument (`sender`) must equal the registered
-    ///     controller.
+    ///     {controllerRvmId} — the EOA that deployed the Lasna reactive
+    ///     contract. The classic callback proxy injects rvm_id, NOT the
+    ///     reactive contract address; checking against the contract address
+    ///     would reject every legitimate delivery.
     function _authCallback(address sender) private view {
         // Classic AbstractCallback adds the proxy to `senders` in its ctor.
         // We check msg.sender here explicitly for a clear revert message.
         if (!senders[msg.sender]) revert UntrustedProxy(msg.sender);
-        address c = controller;
-        if (c == address(0)) revert ControllerUnset();
-        if (sender != c) revert UnauthorizedReactive(sender, c);
+        address rvmId = controllerRvmId;
+        if (rvmId == address(0)) revert ControllerUnset();
+        if (sender != rvmId) revert UnauthorizedReactive(sender, rvmId);
     }
 
     /// @notice Allow the executor to receive ETH (for callback gas funding).

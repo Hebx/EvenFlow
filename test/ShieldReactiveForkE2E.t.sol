@@ -46,6 +46,9 @@ contract ShieldReactiveForkE2ETest is BaseTest {
     uint256 private constant BASE_SEPOLIA = 84532;
 
     address private constant CONTROLLER = address(0xC047701123);
+    /// @dev rvm_id of the Lasna reactive contract used as injected sender. The
+    /// callback proxy injects this EOA, not the controller contract address.
+    address private constant CONTROLLER_RVM_ID = address(0xC047701124);
 
     DirectionalToxicityShield private hook;
     ShieldReactiveExecutor private executor;
@@ -60,7 +63,7 @@ contract ShieldReactiveForkE2ETest is BaseTest {
         executor = new ShieldReactiveExecutor(
             BASE_SEPOLIA_CALLBACK_PROXY, IDirectionalToxicityShield(address(hook)), address(this)
         );
-        executor.setController(CONTROLLER);
+        executor.setController(CONTROLLER, CONTROLLER_RVM_ID);
     }
 
     function test_forkE2E_realProxyCallbackReleasesStrandedReserveNoSwap() public {
@@ -99,10 +102,10 @@ contract ShieldReactiveForkE2ETest is BaseTest {
 
         // The Reactive Signer posts the callback THROUGH the real proxy. We
         // emulate the transport by pranking the real proxy as msg.sender and
-        // injecting the registered controller as the first argument, exactly as
-        // requestCallbackV_1_0 will on live testnet.
+        // injecting the registered controller's rvm_id as the first argument,
+        // exactly as requestCallbackV_1_0 will on live testnet.
         vm.prank(BASE_SEPOLIA_CALLBACK_PROXY);
-        executor.onQuietDrip(CONTROLLER, poolId);
+        executor.onQuietDrip(CONTROLLER_RVM_ID, poolId);
 
         uint128 reserveAfter = hook.getSmoothingReserve(poolId).reserve0;
         assertLt(reserveAfter, reserveBefore, "stranded reserve released by real-proxy callback, no swap");
@@ -127,7 +130,7 @@ contract ShieldReactiveForkE2ETest is BaseTest {
 
         // Caller is this test, not the proxy -> UntrustedProxy.
         vm.expectRevert(abi.encodeWithSelector(ShieldReactiveExecutor.UntrustedProxy.selector, address(this)));
-        executor.onQuietDrip(CONTROLLER, poolId);
+        executor.onQuietDrip(CONTROLLER_RVM_ID, poolId);
     }
 
     // ── helpers ──

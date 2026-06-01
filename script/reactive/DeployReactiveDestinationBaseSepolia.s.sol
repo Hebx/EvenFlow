@@ -39,8 +39,9 @@ import {TestnetScenarioMockERC20} from "../testnet/TestnetDirectionalScenario.so
 /// Deploy ordering: the executor and Lasna controller have a mutual address
 /// dependency, broken with a set-once `controller`. Run this script first
 /// (controller unset), then deploy the controller on Lasna pointing at this
-/// executor, then call `executor.setController(controller)` to lock the wiring.
-/// While unset, no callback can pass authorization.
+/// executor, then call `executor.setController(controller, controllerRvmId)`
+/// where `controllerRvmId` is the EOA that broadcasts the Lasna deploy. While
+/// unset, no callback can pass authorization.
 ///
 /// The Base Sepolia callback proxy is fixed (origins-and-destinations table):
 ///   0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6
@@ -121,7 +122,7 @@ contract DeployReactiveDestinationBaseSepolia is Script {
         console2.log("token1", Currency.unwrap(c1));
         console2.logBytes32(PoolId.unwrap(poolId));
         console2.log(
-            "NEXT: deploy ShieldReactiveController on Lasna with this hook+executor+poolId, then call executor.setController(controller)."
+            "NEXT: deploy ShieldReactiveController on Lasna with this hook+executor+poolId, then call executor.setController(controller, controllerRvmId) where controllerRvmId is the EOA that broadcast the Lasna deploy."
         );
     }
 

@@ -40,6 +40,10 @@ contract DeployReactiveControllerLasna is Script {
         address cronSystem = vm.envAddress("CRON_SYSTEM");
         uint256 cronTopic0 = vm.envUint("CRON_TOPIC0");
         uint256 funding = vm.envOr("CONTROLLER_FUNDING_WEI", uint256(0));
+        // The rvm_id of the deployed reactive contract is the broadcaster EOA —
+        // the proxy injects THIS address as the first arg of every callback,
+        // and the executor authenticates against it.
+        address rvmId = vm.addr(pk);
 
         vm.startBroadcast(pk);
         ShieldReactiveController controller = new ShieldReactiveController{value: funding}(
@@ -49,6 +53,7 @@ contract DeployReactiveControllerLasna is Script {
 
         console2.log("network", "reactive-lasna");
         console2.log("controller", address(controller));
+        console2.log("controllerRvmId", rvmId);
         console2.log("originChainId", originChainId);
         console2.log("shieldHook", shieldHook);
         console2.log("destinationChainId", destChainId);
@@ -56,6 +61,8 @@ contract DeployReactiveControllerLasna is Script {
         console2.logBytes32(targetPoolId);
         console2.log("cronSystem", cronSystem);
         console2.log("fundedWei", funding);
-        console2.log("NEXT: call executor.setController(controller) on the destination chain to lock the wiring.");
+        console2.log(
+            "NEXT: on the destination chain, call executor.setController(controller, controllerRvmId) to lock the wiring."
+        );
     }
 }
