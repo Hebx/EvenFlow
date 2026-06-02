@@ -14,3 +14,9 @@ via_ir = true
 [lint]
 exclude_lints = ["screaming-snake-case-immutable", "screaming-snake-case-const"]
 lint_on_build = false
+
+[invariant]
+runs = 256
+depth = 64
+fail_on_revert = false
+call_override = false
