@@ -73,6 +73,8 @@ contract ShieldReactiveController is AbstractReactive {
 
     event QuietDripRequested(bytes32 indexed poolId, uint256 reason);
 
+    error ZeroAddress();
+
     // ─── Constructor ─────────────────────────────────────────────────────────────
 
     /// @param originChainId_ Chain id of the hook (origin).
@@ -91,6 +93,9 @@ contract ShieldReactiveController is AbstractReactive {
         address cronSystem_,
         uint256 cronTopic0_
     ) payable {
+        if (shieldHook_ == address(0) || executor_ == address(0) || cronSystem_ == address(0)) {
+            revert ZeroAddress();
+        }
         originChainId = originChainId_;
         shieldHook = shieldHook_;
         destinationChainId = destinationChainId_;

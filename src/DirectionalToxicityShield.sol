@@ -37,7 +37,6 @@ contract DirectionalToxicityShield is BaseHook {
     error InvalidDripInterval();
     error InvalidDripBps();
     error NotReactiveExecutor();
-    error InvalidPolicyMode();
 
     struct FeePolicy {
         uint24 baseFee;
