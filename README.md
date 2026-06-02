@@ -6,10 +6,10 @@
 [![Reactive Network](https://img.shields.io/badge/Reactive-autonomous%20drip-7B3FE4.svg)](https://reactive.network)
 [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-FFDB1C.svg)](https://getfoundry.sh/)
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.30-363636.svg?logo=solidity)](https://soliditylang.org/)
-[![Tests](https://img.shields.io/badge/tests-151%20passing-3FB950.svg)](#verify)
+[![Tests](https://img.shields.io/badge/tests-157%20passing-3FB950.svg)](#verify)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **Status:** unaudited MVP. Benchmarks are reproducible same-flow model comparisons plus live-infrastructure fork tests against the real canonical v4 `PoolManager`. They show mechanics and behavioral differences, not realized LP PnL. Don't present them as production yield numbers.
+> **Status:** unaudited MVP. Benchmarks are reproducible same-flow model comparisons plus live-infrastructure fork tests against the canonical v4 `PoolManager`. They measure mechanics and behavioral differences between fee designs, not realized LP PnL.
 
 ---
 
@@ -157,7 +157,7 @@ Production hook: [src/DirectionalToxicityShield.sol](src/DirectionalToxicityShie
 forge install
 forge fmt --check
 forge build
-forge test          # 151 passing, 4 fork-only skipped
+forge test          # 157 passing, 4 fork-only skipped
 ```
 
 The two headline layers, end to end:
