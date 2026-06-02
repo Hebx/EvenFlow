@@ -1,6 +1,8 @@
-# Directional Toxicity Shield
+# EvenFlow
 
-> A Uniswap v4 hook that **smooths LP yield**: it captures the toxicity premium when flow turns adverse and drips it back to LPs when the market goes quiet — autonomously, across chains, via Reactive Network. Built on an oracle-free directional fee.
+> A directional-toxicity-shield hook that smooths LP yield.
+
+> It captures the toxicity premium when flow turns adverse and drips it back to LPs when the market goes quiet — autonomously, across chains, via Reactive Network. Built on an oracle-free directional fee.
 
 [![Uniswap v4](https://img.shields.io/badge/Uniswap-v4%20hook-FF007A.svg?logo=uniswap)](https://docs.uniswap.org/contracts/v4/overview)
 [![Reactive Network](https://img.shields.io/badge/Reactive-autonomous%20drip-7B3FE4.svg)](https://reactive.network)
@@ -80,9 +82,9 @@ How the fee logic compares to prior-art dynamic-fee hooks on identical swap flow
 | Static fee tier (e.g. live Clanker hook) | per-direction, fixed | no | no | yes |
 | Volatility / size dynamic fee | no | no | n/a | usually |
 | Nezlobin skew (JDS / Regis / InfHook) | yes | partial / no | often no | varies |
-| **Directional Toxicity Shield** | **yes (signed pressure)** | **yes** | **yes** | **yes** |
+| **EvenFlow** | **yes (signed pressure)** | **yes** | **yes** | **yes** |
 
-Counter-flow: Shield discounts to 2500 while JDS/InfHook/VPIN stay flat at 3000. Toxic-then-quiet: Shield decays back to 3000 while JDS spikes to 6000 and InfHook to 4767 because they don't decay. Versus the live Clanker static-fee hook on a Base mainnet fork, static stays fixed across all phases while the Shield escalates → discounts → decays. Fee views: `getFeePolicy`, `getDirectionalState`, `previewFee`. Captured fee journeys: [Base mainnet fork](docs/demos/base-mainnet-fork-fee-timeline.md), [live Base Sepolia `3000 → 3500 → 2500 → 3000`](docs/demos/base-sepolia-live-fee-timeline.md).
+Counter-flow: EvenFlow discounts to 2500 while JDS/InfHook/VPIN stay flat at 3000. Toxic-then-quiet: EvenFlow decays back to 3000 while JDS spikes to 6000 and InfHook to 4767 because they don't decay. Versus the live Clanker static-fee hook on a Base mainnet fork, static stays fixed across all phases while EvenFlow escalates → discounts → decays. Fee views: `getFeePolicy`, `getDirectionalState`, `previewFee`. Captured fee journeys: [Base mainnet fork](docs/demos/base-mainnet-fork-fee-timeline.md), [live Base Sepolia `3000 → 3500 → 2500 → 3000`](docs/demos/base-sepolia-live-fee-timeline.md).
 
 ---
 
@@ -172,7 +174,7 @@ forge test --match-path 'test/reactive/*.sol'
 forge test --match-path 'test/ShieldReactiveForkE2E.t.sol'
 ```
 
-Foundation fee against real infrastructure (Base mainnet fork — proves the Shield and the live Clanker hook share the canonical `PoolManager` `0x498581fF718922c3f8e6A244956aF099B2652b2b`):
+Foundation fee against real infrastructure (Base mainnet fork — proves EvenFlow and the live Clanker hook share the canonical `PoolManager` `0x498581fF718922c3f8e6A244956aF099B2652b2b`):
 
 ```bash
 forge test --match-contract DirectionalToxicityShieldMainnetComparisonTest --fork-url "$BASE_MAINNET_RPC_URL" -vv
