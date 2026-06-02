@@ -47,6 +47,8 @@ contract ShieldReactiveControllerCronOnly is AbstractReactive {
 
     event QuietDripRequested(bytes32 indexed poolId, uint256 reason);
 
+    error ZeroAddress();
+
     constructor(
         uint256 destinationChainId_,
         address executor_,
@@ -54,6 +56,7 @@ contract ShieldReactiveControllerCronOnly is AbstractReactive {
         address cronSystem_,
         uint256 cronTopic0_
     ) payable {
+        if (executor_ == address(0) || cronSystem_ == address(0)) revert ZeroAddress();
         destinationChainId = destinationChainId_;
         executor = executor_;
         targetPool = targetPool_;

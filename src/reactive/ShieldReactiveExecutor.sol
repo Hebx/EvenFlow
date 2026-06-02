@@ -66,6 +66,7 @@ contract ShieldReactiveExecutor is AbstractCallback {
     error ControllerUnset();
     error ControllerZero();
     error ControllerRvmIdZero();
+    error ZeroAddress();
     error UntrustedProxy(address caller);
     error UnauthorizedReactive(address sender, address expected);
     error PoolNotRegistered(PoolId poolId);
@@ -82,6 +83,7 @@ contract ShieldReactiveExecutor is AbstractCallback {
         payable
         AbstractCallback(callbackProxy_)
     {
+        if (address(shield_) == address(0) || owner_ == address(0)) revert ZeroAddress();
         shield = shield_;
         owner = owner_;
     }

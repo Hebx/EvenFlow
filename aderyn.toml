@@ -1,0 +1,21 @@
+# Aderyn Configuration File
+# DO NOT CHANGE version below. As of now, only 1 is supported
+version = 1
+
+# Base path for resolving remappings + compiling, relative to workspace root.
+root = "."
+
+# First-party source directory.
+src = "src"
+
+# Exclude vendored deps, the template Counter, and the prior-art comparators
+# (reference implementations, not the audited surface).
+exclude = [
+    "src/Counter.sol",
+    "src/comparators/",
+]
+
+[detectors]
+# Run all detectors by default.
+
+[env]

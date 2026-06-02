@@ -32,3 +32,6 @@ research/*
 
 # Vendored prior-art repos used only for local source review (not part of build)
 external-hooks/
+
+# Audit tool stderr is noise; reports + triage ARE tracked.
+audit/*-stderr.txt

@@ -1,0 +1,8 @@
+{
+  "detectors_to_exclude": "naming-convention,solc-version,pragma,too-many-digits",
+  "filter_paths": "lib/,test/,script/,src/Counter.sol",
+  "exclude_dependencies": true,
+  "exclude_informational": false,
+  "exclude_optimization": true,
+  "solc_remaps": []
+}
