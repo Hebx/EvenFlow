@@ -19,18 +19,18 @@ Passive LPs lose to informed, one-directional flow, and even a good defensive fe
 
 This hook turns that surplus into a smoother payout:
 
-1. **Yield smoothing (opt-in)** — capture the directional-toxicity premium while flow is adverse, then drip it back to in-range LPs once the market calms. Realized yield gets flatter without giving up total yield.
-2. **Reactive autonomous drip (optional)** — a [Reactive Network](https://reactive.network) cron releases the quiet-regime drip cross-chain with no keeper or bot, so stranded reserve reaches LPs **even when zero swaps happen**.
-3. **Directional fee (foundation)** — the oracle-free, bounded fee that prices toxicity by direction and *funds* the smoothing reserve in the first place.
+1. **Directional fee (foundation)** — an oracle-free, bounded fee that prices toxicity by direction and *funds* the smoothing reserve.
+2. **Yield smoothing (opt-in)** — captures the directional-toxicity premium while flow is adverse, then drips it back to in-range LPs once the market calms. Realized yield gets flatter without giving up total yield.
+3. **Reactive autonomous drip (optional)** — a [Reactive Network](https://reactive.network) cron releases the quiet-regime drip cross-chain with no keeper or bot, so stranded reserve reaches LPs **even when zero swaps happen**.
 
-The two layers that make this project distinct are **smoothing** and **reactive**. The directional fee is the base they stand on — necessary, but the smoothing and reactive layers are where the value lands for LPs.
+The directional fee is the base the other two layers stand on. Smoothing and reactive are where the value lands for LPs.
 
 ## Architecture: three layers
 
-A pool runs any prefix of this stack. Each layer is independent; lower layers never depend on higher ones, and both upper layers are off until you opt in.
+A pool runs any prefix of this stack. Each layer builds on the one below, and the upper two are off until you opt in.
 
 ```
-┌─ Foundation · Directional fee ──────────────────────────────────────┐
+┌─ Layer 1 · Directional fee (foundation) ────────────────────────────┐
 │   Signed pressure → adaptive LP fee. No custody, no oracle.          │
 │   Funds the smoothing reserve. Always on.                            │
 └──────────────────────────────────────────────────────────────────────┘
@@ -50,9 +50,39 @@ A pool runs any prefix of this stack. Each layer is independent; lower layers ne
 
 | Layer | Role | Custody? | Default | Proven on |
 |---|---|:--:|:--:|---|
+| **1 · Directional fee** | funds the reserve | none | always on | local + Base mainnet fork + live Base Sepolia |
 | **2 · Yield smoothing** | **the value** | opt-in (ERC-6909 claims) | off | Base mainnet fork + live Base Sepolia capture |
 | **3 · Reactive drip** | **the reach** | none added | optional | live Base Sepolia ← Reactive Lasna |
-| Foundation · Directional fee | funds the reserve | none | always on | local + Base mainnet fork + live Base Sepolia |
+
+---
+
+## Layer 1 — Directional fee (foundation)
+
+The fee layer is the engine underneath: it prices toxicity so there's a premium to smooth in the first place. It tracks a signed, decaying **directional pressure** per pool and moves the LP fee with it — no oracle, every move clamped:
+
+```
+  fee
+   ^
+3500│        ____ sustained toxic flow → escalate (bounded)
+   │       /
+3000│──── /─────────────── base ───────────\________ decays back when quiet
+   │    /
+2500│  *  ← counter-flow swap → discount below base (rewards rebalancers)
+   └──────────────────────────────────────────────────────▶ swaps over time
+```
+
+Push price one way → fee steps up (bounded). Trade the rebalancing direction → fee discounts below base. Market goes quiet → pressure decays, fee returns to base. Pure v4: permissions are `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap` (plus `afterSwapReturnDelta` only when smoothing is on).
+
+How the fee logic compares to prior-art dynamic-fee hooks on identical swap flow ([test/PriorArtComparison.t.sol](test/PriorArtComparison.t.sol), [test/DirectionalToxicityShieldMainnetComparison.t.sol](test/DirectionalToxicityShieldMainnetComparison.t.sol)):
+
+| Approach | Reacts to direction? | Discounts counter-flow? | Decays when quiet? | Oracle-free? |
+|---|:--:|:--:|:--:|:--:|
+| Static fee tier (e.g. live Clanker hook) | per-direction, fixed | no | no | yes |
+| Volatility / size dynamic fee | no | no | n/a | usually |
+| Nezlobin skew (JDS / Regis / InfHook) | yes | partial / no | often no | varies |
+| **Directional Toxicity Shield** | **yes (signed pressure)** | **yes** | **yes** | **yes** |
+
+Counter-flow: Shield discounts to 2500 while JDS/InfHook/VPIN stay flat at 3000. Toxic-then-quiet: Shield decays back to 3000 while JDS spikes to 6000 and InfHook to 4767 because they don't decay. Versus the live Clanker static-fee hook on a Base mainnet fork, static stays fixed across all phases while the Shield escalates → discounts → decays. Fee views: `getFeePolicy`, `getDirectionalState`, `previewFee`. Captured fee journeys: [Base mainnet fork](docs/demos/base-mainnet-fork-fee-timeline.md), [live Base Sepolia `3000 → 3500 → 2500 → 3000`](docs/demos/base-sepolia-live-fee-timeline.md).
 
 ---
 
@@ -100,36 +130,6 @@ The executor never forces anything: the hook re-validates regime, cooldown, and 
 **Live testnet proof.** On Base Sepolia ← Reactive Lasna, a cron tick delivered an authenticated `onQuietDrip` that released stranded LP reserve through `donate()` with no swap — tx [`0x7a2b6afb…ed71f`](https://sepolia.basescan.org/tx/0x7a2b6afb30e436f9da3b1bc3dde55bc5f549654443b96fc681a029313ebed71f) (block 42275501): `proxy.callback → executor.onQuietDrip → DripCallbackReceived → triggerQuietDrip → donate → DripReleased`.
 
 Contracts: [`ShieldReactiveController`](src/reactive/ShieldReactiveController.sol) / [`ShieldReactiveControllerCronOnly`](src/reactive/ShieldReactiveControllerCronOnly.sol) (Reactive) and [`ShieldReactiveExecutor`](src/reactive/ShieldReactiveExecutor.sol) (Base).
-
----
-
-## Foundation — Directional fee
-
-The fee layer is the engine underneath: it prices toxicity so there's a premium to smooth in the first place. It tracks a signed, decaying **directional pressure** per pool and moves the LP fee with it — no oracle, every move clamped:
-
-```
-  fee
-   ^
-3500│        ____ sustained toxic flow → escalate (bounded)
-   │       /
-3000│──── /─────────────── base ───────────\________ decays back when quiet
-   │    /
-2500│  *  ← counter-flow swap → discount below base (rewards rebalancers)
-   └──────────────────────────────────────────────────────▶ swaps over time
-```
-
-Push price one way → fee steps up (bounded). Trade the rebalancing direction → fee discounts below base. Market goes quiet → pressure decays, fee returns to base. Pure v4: permissions are `beforeInitialize`, `afterInitialize`, `beforeSwap`, `afterSwap` (plus `afterSwapReturnDelta` only when smoothing is on).
-
-How the fee logic compares to prior-art dynamic-fee hooks on identical swap flow ([test/PriorArtComparison.t.sol](test/PriorArtComparison.t.sol), [test/DirectionalToxicityShieldMainnetComparison.t.sol](test/DirectionalToxicityShieldMainnetComparison.t.sol)):
-
-| Approach | Reacts to direction? | Discounts counter-flow? | Decays when quiet? | Oracle-free? |
-|---|:--:|:--:|:--:|:--:|
-| Static fee tier (e.g. live Clanker hook) | per-direction, fixed | no | no | yes |
-| Volatility / size dynamic fee | no | no | n/a | usually |
-| Nezlobin skew (JDS / Regis / InfHook) | yes | partial / no | often no | varies |
-| **Directional Toxicity Shield** | **yes (signed pressure)** | **yes** | **yes** | **yes** |
-
-Counter-flow: Shield discounts to 2500 while JDS/InfHook/VPIN stay flat at 3000. Toxic-then-quiet: Shield decays back to 3000 while JDS spikes to 6000 and InfHook to 4767 because they don't decay. Versus the live Clanker static-fee hook on a Base mainnet fork, static stays fixed across all phases while the Shield escalates → discounts → decays. Fee views: `getFeePolicy`, `getDirectionalState`, `previewFee`. Captured fee journeys: [Base mainnet fork](docs/demos/base-mainnet-fork-fee-timeline.md), [live Base Sepolia `3000 → 3500 → 2500 → 3000`](docs/demos/base-sepolia-live-fee-timeline.md).
 
 ---
 
@@ -202,8 +202,10 @@ The script mines a CREATE2 salt for the hook permission bits and deploys against
 
 ## Security posture
 
-- **Unaudited.** No third-party audit. Do not deploy with real capital without independent review.
-- **Custody is opt-in and is the main risk surface.** Smoothing off (default) → no return delta, no funds held. Smoothing on → the hook holds captured premium as ERC-6909 claims before `donate()`; conservation (`captured == dripped + remaining`) is enforced by tests. `configureSmoothing` is gated to the pool configurer.
+- **Static analysis clean (0 High).** Slither + Aderyn scoped to first-party sources, with reproducible configs ([`slither.config.json`](slither.config.json), [`aderyn.toml`](aderyn.toml)). Findings triaged in [`audit/TRIAGE.md`](audit/TRIAGE.md) — all remaining items are known v4-hook idioms (reentrancy inside PoolManager unlock, unused donate return, timestamp comparisons on minute-scale windows). Constructor zero-address guards hardened on the production reactive wiring.
+- **No third-party audit yet.** Independent review before mainnet deployment with real capital.
+- **Invariant + unit coverage.** 157 tests (23 suites), plus a dedicated invariant suite (256 runs × 64 depth). Conservation gate (`captured == dripped + remaining`) enforced to the wei.
+- **Custody is opt-in and is the main risk surface.** Smoothing off (default) → no return delta, no funds held. Smoothing on → the hook holds captured premium as ERC-6909 claims before `donate()`; conservation enforced by tests. `configureSmoothing` is gated to the pool configurer.
 - **Reactive drip adds no custody and can't be forced.** Callbacks are authenticated two ways (callback proxy `msg.sender` + locked `rvm_id`), and the hook re-validates regime, cooldown, and reserve on every callback — an ineligible pool is a safe no-op.
 - **No oracle, no admin price input.** Fees derive only from local pool state (tick movement, elapsed time, liquidity) — nothing external to manipulate.
 - **Bounded by construction.** Every fee is clamped to `[minFee, maxFee]` with a per-update `maxFeeStep`; pressure is clamped to `maxPressure`. One swap can't move the fee arbitrarily.
