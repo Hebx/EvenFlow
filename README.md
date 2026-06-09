@@ -13,6 +13,8 @@
 
 ![EvenFlow](assets/evenflow-thumbnail.jpg)
 
+📊 [View Pitch Deck](https://canva.link/ohh3e99jzlp1p3i)
+
 > **Status:** unaudited MVP. Benchmarks are reproducible same-flow model comparisons plus live-infrastructure fork tests against the canonical v4 `PoolManager`. They measure mechanics and behavioral differences between fee designs, not realized LP PnL.
 
 ---
