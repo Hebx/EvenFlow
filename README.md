@@ -11,13 +11,15 @@
 [![Tests](https://img.shields.io/badge/tests-157%20passing-3FB950.svg)](#verify)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+![EvenFlow](assets/evenflow-thumbnail.jpg)
+
 > **Status:** unaudited MVP. Benchmarks are reproducible same-flow model comparisons plus live-infrastructure fork tests against the canonical v4 `PoolManager`. They measure mechanics and behavioral differences between fee designs, not realized LP PnL.
 
 ---
 
 ## What it does
 
-Passive LPs lose to informed, one-directional flow, and even a good defensive fee leaves their realized yield **lumpy** — fat in toxic bursts, thin when it's quiet — with surplus value that can sit stranded in the pool.
+Passive LPs lose to informed, one-directional flow, and even a good defensive fee leaves their realized yield **uneven** — high during toxic bursts, low when it's quiet — with surplus value that stays locked in the pool.
 
 This hook turns that surplus into a smoother payout:
 
@@ -84,7 +86,7 @@ How the fee logic compares to prior-art dynamic-fee hooks on identical swap flow
 | Nezlobin skew (JDS / Regis / InfHook) | yes | partial / no | often no | varies |
 | **EvenFlow** | **yes (signed pressure)** | **yes** | **yes** | **yes** |
 
-Counter-flow: EvenFlow discounts to 2500 while JDS/InfHook/VPIN stay flat at 3000. Toxic-then-quiet: EvenFlow decays back to 3000 while JDS spikes to 6000 and InfHook to 4767 because they don't decay. Versus the live Clanker static-fee hook on a Base mainnet fork, static stays fixed across all phases while EvenFlow escalates → discounts → decays. Fee views: `getFeePolicy`, `getDirectionalState`, `previewFee`. Captured fee journeys: [Base mainnet fork](docs/demos/base-mainnet-fork-fee-timeline.md), [live Base Sepolia `3000 → 3500 → 2500 → 3000`](docs/demos/base-sepolia-live-fee-timeline.md).
+Counter-flow: EvenFlow discounts to 2500 while JDS/InfHook/VPIN stay flat at 3000. Toxic-then-quiet: EvenFlow decays back to 3000 while JDS spikes to 6000 and InfHook to 4767 because they don't decay. Versus the live Clanker static-fee hook on a Base mainnet fork, EvenFlow escalates → discounts → decays — charging the right rate at each phase rather than the same rate throughout. Fee views: `getFeePolicy`, `getDirectionalState`, `previewFee`. Captured fee journeys: [Base mainnet fork](docs/demos/base-mainnet-fork-fee-timeline.md), [live Base Sepolia `3000 → 3500 → 2500 → 3000`](docs/demos/base-sepolia-live-fee-timeline.md).
 
 ---
 
@@ -94,9 +96,9 @@ This is the core of the project. A pool that opts in (`configureSmoothing(enable
 
 - **Capture.** While directional pressure marks flow as toxic, the premium above base fee is escrowed as ERC-6909 claims instead of all flowing out immediately.
 - **Drip.** Once the pool returns to a quiet regime, the escrow is released back to in-range LPs through the canonical v4 `donate()` path, on a configurable block cadence.
-- **Conserve.** Nothing is minted or skimmed: `captured == dripped + remaining`, exact to the wei, enforced as a hard test gate.
+- **Conserve.** Nothing is created or taken: `captured == dripped + remaining` — enforced by a strict conservation test.
 
-The result is a tighter realized-yield distribution at essentially conserved total yield. On the canonical burst-then-quiet scenario the per-step yield variance drops ~61% (coefficient of variation 429 → 168 bps, a 2.5× tighter distribution) with `paid + escrow == raw` exactly. Smoothing is most effective for bursty toxicity and intentionally near-neutral under sustained one-way trends — the full scoreboard, including the cases where it doesn't help, is in [docs/product/smoothing-proof-evidence.md](docs/product/smoothing-proof-evidence.md).
+The result is a tighter realized-yield distribution at essentially conserved total yield. On the canonical burst-then-quiet scenario the per-step yield variance drops ~61% (coefficient of variation 429 → 168 bps, a 2.5× tighter distribution) — total yield is fully preserved. Smoothing is most effective for bursty toxicity and intentionally near-neutral under sustained one-way trends — the full scoreboard, including the cases where it doesn't help, is in [docs/product/smoothing-proof-evidence.md](docs/product/smoothing-proof-evidence.md).
 
 Custody is real and opt-in: with smoothing **off** (default) the hook holds no funds and returns no delta. With it **on**, the hook holds captured premium as ERC-6909 claims until it drips — a deliberate change to the risk/audit story, gated to the pool configurer.
 
@@ -127,9 +129,9 @@ Smoothing has one gap: the in-pool drip only fires on an *organic* quiet-regime 
                                        └────────────────────────┘
 ```
 
-The executor never forces anything: the hook re-validates regime, cooldown, and reserve on every callback, so an ineligible pool is a safe no-op. Callback auth is two-factor — `msg.sender` must be the chain callback proxy, **and** the proxy-injected `rvm_id` must equal the registered `controllerRvmId` (locked once via `setController`).
+The executor never forces anything: the hook re-validates regime, cooldown, and reserve on every callback, so an ineligible pool is ignored safely. The callback is verified two ways — `msg.sender` must be the chain callback proxy, **and** the proxy-injected `rvm_id` must equal the registered `controllerRvmId` (locked once via `setController`).
 
-**Live testnet proof.** On Base Sepolia ← Reactive Lasna, a cron tick delivered an authenticated `onQuietDrip` that released stranded LP reserve through `donate()` with no swap — tx [`0x7a2b6afb…ed71f`](https://sepolia.basescan.org/tx/0x7a2b6afb30e436f9da3b1bc3dde55bc5f549654443b96fc681a029313ebed71f) (block 42275501): `proxy.callback → executor.onQuietDrip → DripCallbackReceived → triggerQuietDrip → donate → DripReleased`.
+**Live testnet proof.** On Base Sepolia ← Reactive Lasna, a cron tick delivered a verified `onQuietDrip` that released the trapped LP reserve through `donate()` with no swap — tx [`0x7a2b6afb…ed71f`](https://sepolia.basescan.org/tx/0x7a2b6afb30e436f9da3b1bc3dde55bc5f549654443b96fc681a029313ebed71f) (block 42275501): `proxy.callback → executor.onQuietDrip → DripCallbackReceived → triggerQuietDrip → donate → DripReleased`.
 
 Contracts: [`ShieldReactiveController`](src/reactive/ShieldReactiveController.sol) / [`ShieldReactiveControllerCronOnly`](src/reactive/ShieldReactiveControllerCronOnly.sol) (Reactive) and [`ShieldReactiveExecutor`](src/reactive/ShieldReactiveExecutor.sol) (Base).
 
@@ -206,9 +208,9 @@ The script mines a CREATE2 salt for the hook permission bits and deploys against
 
 - **Static analysis clean (0 High).** Slither + Aderyn scoped to first-party sources, with reproducible configs ([`slither.config.json`](slither.config.json), [`aderyn.toml`](aderyn.toml)). Findings triaged in [`audit/TRIAGE.md`](audit/TRIAGE.md) — all remaining items are known v4-hook idioms (reentrancy inside PoolManager unlock, unused donate return, timestamp comparisons on minute-scale windows). Constructor zero-address guards hardened on the production reactive wiring.
 - **No third-party audit yet.** Independent review before mainnet deployment with real capital.
-- **Invariant + unit coverage.** 157 tests (23 suites), plus a dedicated invariant suite (256 runs × 64 depth). Conservation gate (`captured == dripped + remaining`) enforced to the wei.
+- **Invariant + unit coverage.** 157 tests (23 suites), plus a dedicated invariant suite (256 runs × 64 depth). Conservation gate (`captured == dripped + remaining`) enforced by a strict test.
 - **Custody is opt-in and is the main risk surface.** Smoothing off (default) → no return delta, no funds held. Smoothing on → the hook holds captured premium as ERC-6909 claims before `donate()`; conservation enforced by tests. `configureSmoothing` is gated to the pool configurer.
-- **Reactive drip adds no custody and can't be forced.** Callbacks are authenticated two ways (callback proxy `msg.sender` + locked `rvm_id`), and the hook re-validates regime, cooldown, and reserve on every callback — an ineligible pool is a safe no-op.
+- **Reactive drip adds no custody and can't be forced.** Callbacks are verified two ways (callback proxy `msg.sender` + locked `rvm_id`), and the hook re-validates regime, cooldown, and reserve on every callback — an ineligible pool is ignored safely.
 - **No oracle, no admin price input.** Fees derive only from local pool state (tick movement, elapsed time, liquidity) — nothing external to manipulate.
 - **Bounded by construction.** Every fee is clamped to `[minFee, maxFee]` with a per-update `maxFeeStep`; pressure is clamped to `maxPressure`. One swap can't move the fee arbitrarily.
 - **Settlement is canonical.** Everything goes through the v4 `PoolManager` lock; the hook holds no external balances when smoothing is off.
