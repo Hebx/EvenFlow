@@ -11,7 +11,7 @@
 [![Tests](https://img.shields.io/badge/tests-157%20passing-3FB950.svg)](#verify)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-![EvenFlow](assets/evenflow-thumbnail.jpg)
+![EvenFlow](assets/evenflow-thumbnail-v2.jpg)
 
 📊 [View Pitch Deck](https://canva.link/ohh3e99jzlp1p3i)
 
