@@ -67,8 +67,12 @@ contract ShieldInvariantHandler is CommonBase, StdCheats, StdUtils {
     /// Attribute the post-action reserve change to capture (grew) or drip (shrank).
     function _accountReserveDelta() private {
         DirectionalToxicityShieldHarness.SmoothingReserve memory r = hook.getSmoothingReserve(poolId);
-        if (r.reserve0 > prevReserve0) ghostCaptured0 += (r.reserve0 - prevReserve0);
-        else if (r.reserve0 < prevReserve0) { ghostDripped0 += (prevReserve0 - r.reserve0); dripCount++; }
+        if (r.reserve0 > prevReserve0) {
+            ghostCaptured0 += (r.reserve0 - prevReserve0);
+        } else if (r.reserve0 < prevReserve0) {
+            ghostDripped0 += (prevReserve0 - r.reserve0);
+            dripCount++;
+        }
         if (r.reserve1 > prevReserve1) ghostCaptured1 += (r.reserve1 - prevReserve1);
         else if (r.reserve1 < prevReserve1) ghostDripped1 += (prevReserve1 - r.reserve1);
     }

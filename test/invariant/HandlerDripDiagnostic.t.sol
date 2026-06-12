@@ -54,9 +54,14 @@ contract HandlerDripDiagnostic is BaseTest {
         int24 tickUpper = TickMath.maxUsableTick(key.tickSpacing);
         uint128 liq = 100e18;
         (uint256 a0, uint256 a1) = LiquidityAmounts.getAmountsForLiquidity(
-            Constants.SQRT_PRICE_1_1, TickMath.getSqrtPriceAtTick(tickLower), TickMath.getSqrtPriceAtTick(tickUpper), liq
+            Constants.SQRT_PRICE_1_1,
+            TickMath.getSqrtPriceAtTick(tickLower),
+            TickMath.getSqrtPriceAtTick(tickUpper),
+            liq
         );
-        positionManager.mint(key, tickLower, tickUpper, liq, a0 + 1, a1 + 1, address(this), block.timestamp, Constants.ZERO_BYTES);
+        positionManager.mint(
+            key, tickLower, tickUpper, liq, a0 + 1, a1 + 1, address(this), block.timestamp, Constants.ZERO_BYTES
+        );
 
         hook.setFeePolicy(poolId, 3000, 500, 10000, 500, 10, 500, 500_000, 30, 5 minutes, 0, 5);
         hook.configureSmoothing(

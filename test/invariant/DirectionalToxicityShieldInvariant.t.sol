@@ -108,8 +108,12 @@ contract DirectionalToxicityShieldInvariant is BaseTest {
     /// the protocol's favor), but the tracked reserve must reconcile exactly.
     function invariant_reserveReconcilesWithGhosts() public view {
         DirectionalToxicityShield.SmoothingReserve memory r = hook.getSmoothingReserve(poolId);
-        assertEq(uint256(r.reserve0), handler.ghostCaptured0() - handler.ghostDripped0(), "reserve0 != captured-dripped");
-        assertEq(uint256(r.reserve1), handler.ghostCaptured1() - handler.ghostDripped1(), "reserve1 != captured-dripped");
+        assertEq(
+            uint256(r.reserve0), handler.ghostCaptured0() - handler.ghostDripped0(), "reserve0 != captured-dripped"
+        );
+        assertEq(
+            uint256(r.reserve1), handler.ghostCaptured1() - handler.ghostDripped1(), "reserve1 != captured-dripped"
+        );
     }
 
     /// The applied/last fee is always within the policy's [minFee, maxFee] band.
@@ -174,7 +178,15 @@ contract DirectionalToxicityShieldInvariant is BaseTest {
             liquidityAmount
         );
         positionManager.mint(
-            poolKey, tickLower, tickUpper, liquidityAmount, a0 + 1, a1 + 1, address(this), block.timestamp, Constants.ZERO_BYTES
+            poolKey,
+            tickLower,
+            tickUpper,
+            liquidityAmount,
+            a0 + 1,
+            a1 + 1,
+            address(this),
+            block.timestamp,
+            Constants.ZERO_BYTES
         );
     }
 }

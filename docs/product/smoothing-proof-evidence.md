@@ -263,7 +263,7 @@ forge test --match-contract LiquidityPenaltyHeadToHeadTest \
 forge script script/SmoothingProofReport.s.sol:SmoothingProofReport
 ```
 
-Full suite: 150 passed / 0 failed / 4 skipped (RPC-gated fork tests).
+Full suite: 157 passed / 0 failed / 4 skipped (RPC-gated fork tests).
 
 ---
 
