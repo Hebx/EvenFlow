@@ -133,7 +133,7 @@ Smoothing has one gap: the in-pool drip only fires on an *organic* quiet-regime 
 
 The executor never forces anything: the hook re-validates regime, cooldown, and reserve on every callback, so an ineligible pool is ignored safely. The callback is verified two ways — `msg.sender` must be the chain callback proxy, **and** the proxy-injected `rvm_id` must equal the registered `controllerRvmId` (locked once via `setController`).
 
-**Live testnet proof.** On Base Sepolia ← Reactive Lasna, a cron tick delivered a verified `onQuietDrip` that released the trapped LP reserve through `donate()` with no swap — tx [`0x7a2b6afb…ed71f`](https://sepolia.basescan.org/tx/0x7a2b6afb30e436f9da3b1bc3dde55bc5f549654443b96fc681a029313ebed71f) (block 42275501): `proxy.callback → executor.onQuietDrip → DripCallbackReceived → triggerQuietDrip → donate → DripReleased`.
+**Live testnet proof.** On Base Sepolia ← Reactive Lasna, a cron tick delivered a verified `onQuietDrip` that released the trapped LP reserve through `donate()` with no swap — tx [`0x7a2b6afb…ed71f`](https://sepolia.basescan.org/tx/0x7a2b6afb30e436f9da3b1bc3dde55bc5f549654443b96fc681a029313ebed71f) (block 42275501): `proxy.callback → executor.onQuietDrip → DripCallbackReceived → triggerQuietDrip → donate → DripReleased`. The [hook](https://sepolia.basescan.org/address/0xf9664050d816d0cAD201B318A30E9D4C4eA270c4#code) and [executor](https://sepolia.basescan.org/address/0x492E727b89Bef1c25631415dD21E440D624c7fa9#code) in that trace are source-verified on BaseScan.
 
 Contracts: [`ShieldReactiveController`](src/reactive/ShieldReactiveController.sol) / [`ShieldReactiveControllerCronOnly`](src/reactive/ShieldReactiveControllerCronOnly.sol) (Reactive) and [`ShieldReactiveExecutor`](src/reactive/ShieldReactiveExecutor.sol) (Base).
 
@@ -204,7 +204,16 @@ forge script script/00_DeployHook.s.sol:DeployHookScript \
   --rpc-url <RPC_URL> --account <KEY_NAME> --sender <ADDRESS> --broadcast
 ```
 
-The script mines a CREATE2 salt for the hook permission bits and deploys against the configured v4 `PoolManager`. Latest testnet runs are recorded under [deployments/](deployments/). Smoothing config, the reactive controller/executor deploy (`cast send --create`, not `forge script`), full testnet stage gates, the simulation/backtest harness, keystore setup, and troubleshooting live in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+The script mines a CREATE2 salt for the hook permission bits and deploys against the configured v4 `PoolManager`. Latest testnet runs are recorded under [deployments/](deployments/).
+
+**Verified on Base Sepolia** (source-verified on BaseScan — read the code next to the live drip tx):
+
+| Contract | Address |
+| :--- | :--- |
+| Hook (`DirectionalToxicityShield`) | [`0xf9664050…270c4`](https://sepolia.basescan.org/address/0xf9664050d816d0cAD201B318A30E9D4C4eA270c4#code) |
+| Executor (`ShieldReactiveExecutor`) | [`0x492E727b…7fa9`](https://sepolia.basescan.org/address/0x492E727b89Bef1c25631415dD21E440D624c7fa9#code) |
+
+Smoothing config, the reactive controller/executor deploy (`cast send --create`, not `forge script`), full testnet stage gates, the simulation/backtest harness, keystore setup, and troubleshooting live in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Security posture
 
